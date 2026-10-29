@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Generated model artifacts
+models/*.pkl
+models/*.joblib
+models/*.model
+
+# MLflow local tracking data
+mlruns/
+
+# DVC local cache
+.dvc/cache/
+
+# Logs and generated reports
+logs/*.log
+logs/*.csv
+logs/*.html
+
+# Operating system and editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Temporary files
+*.tmp
+*.bak
