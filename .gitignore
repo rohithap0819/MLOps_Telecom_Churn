@@ -9,7 +9,7 @@ __pycache__/
 venv/
 env/
 
-# Environment variables and secrets
+# Secrets
 .env
 .env.*
 !.env.example
@@ -21,23 +21,34 @@ env/
 models/*.pkl
 models/*.joblib
 models/*.model
+models/production/*.joblib
+models/candidates/*.joblib
 
-# MLflow local tracking data
+# MLflow
 mlruns/
 
-# DVC local cache
+# DVC cache
 .dvc/cache/
 
-# Logs and generated reports
+# Logs and reports
 logs/*.log
 logs/*.csv
 logs/*.html
 
-# Operating system and editor
+# Editor and OS
+.vscode/
 .DS_Store
 Thumbs.db
-.vscode/
 
 # Temporary files
 *.tmp
 *.bak
+
+# Incoming demonstration batches
+data/incoming/*.csv
+
+# Runtime approval history
+logs/approval_requests.json
+
+# Runtime production registry
+models/production_registry.json
