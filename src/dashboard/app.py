@@ -1,24 +1,85 @@
+
+import os
 import streamlit as st
 import requests
 from pathlib import Path
 import pandas as pd
 
 # FastAPI backend URL
-API_URL = "http://127.0.0.1:8001"
+API_URL = os.getenv(
+    "API_URL",
+    "http://127.0.0.1:8001"
+).rstrip("/")
 
 # Page configuration
 st.set_page_config(
-    page_title="Telecom Churn MLOps Dashboard",
+    page_title="Telecom Churn MLOps",
     page_icon="📊",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-st.title("📊 Telecom Customer Churn - MLOps Dashboard")
-st.write("Monitor the production model and access churn prediction services.")
+# ==========================================
+# CUSTOM STYLING
+# ==========================================
 
-st.divider()
+st.markdown("""
+<style>
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
 
-# Fetch API health
+    [data-testid="stSidebar"] {
+        border-right: 1px solid rgba(128,128,128,0.2);
+    }
+
+    .main-title {
+        font-size: 30px;
+        font-weight: 700;
+        margin-bottom: 5px;
+    }
+
+    .main-subtitle {
+        color: #888888;
+        font-size: 15px;
+        margin-bottom: 25px;
+    }
+
+    div[data-testid="stMetric"] {
+        background-color: rgba(128,128,128,0.07);
+        padding: 12px;
+        border-radius: 10px;
+    }
+
+    /* Reduce sidebar metric value font size */
+    [data-testid="stSidebar"] [data-testid="stMetricValue"] {
+        font-size: 1.5rem !important;
+        line-height: 1.3 !important;
+    }
+
+    /* Slightly reduce metric label size */
+    [data-testid="stSidebar"] [data-testid="stMetricLabel"] {
+        font-size: 0.9rem !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ==========================================
+# SIDEBAR - PRODUCTION STATUS
+# ==========================================
+
+st.sidebar.title("📊 Telecom MLOps")
+st.sidebar.caption("Production Control Center")
+
+st.sidebar.divider()
+
+st.sidebar.subheader("Production Status")
+
+health_data = {}
+model_data = {}
+
 try:
     health_response = requests.get(
         f"{API_URL}/health",
@@ -34,525 +95,565 @@ try:
     model_response.raise_for_status()
     model_data = model_response.json()
 
-    # Dashboard metrics
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.metric(
-            "API Status",
-            "Online" if health_data["status"] == "healthy" else "Offline"
-        )
-
-    with col2:
-        st.metric(
-            "Production Model",
-            model_data.get("production_model") or "Not Available"
-        )
-
-    with col3:
-        st.metric(
-            "Approval Status",
-            model_data.get("approval_status") or "Not Available"
-        )
-
-    st.divider()
-
-    st.subheader("Production Model Information")
-
-    st.write("**Model Version:**", model_data.get("model_version", "N/A"))
-    st.write("**Approved By:**", model_data.get("approved_by", "N/A"))
+    api_status = (
+        "Online"
+        if health_data.get("status") == "healthy"
+        else "Offline"
+    )
 
 except requests.exceptions.RequestException:
-    st.error(
-        "Unable to connect to FastAPI. "
-        "Please start the backend on port 8001."
-    )
+    api_status = "Offline"
 
-st.divider()
+# API Status
+st.sidebar.metric(
+    "API Status",
+    api_status
+)
 
-st.caption("Telecom Churn Prediction | MLOps Project")
+# Production Model
+st.sidebar.metric(
+    "Production Model",
+    model_data.get("production_model") or "Not Available"
+)
 
+# Approval Status
+st.sidebar.metric(
+    "Approval Status",
+    model_data.get("approval_status") or "Not Available"
+)
 
-st.divider()
+# Model Version
+st.sidebar.metric(
+    "Model Version",
+    model_data.get("model_version") or "Not Available"
+)
 
-st.header("🔍 Customer Churn Prediction")
-st.write("Enter customer details to predict whether the customer is likely to churn.")
+if api_status == "Offline":
+    st.sidebar.error("Unable to connect to FastAPI.")
 
-with st.form("customer_prediction_form"):
+st.sidebar.divider()
 
-    st.subheader("Customer Information")
+if st.sidebar.button("🔄 Refresh Status", use_container_width=True):
+    st.rerun()
 
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        gender = st.selectbox("Gender", ["Male", "Female"])
-        senior_citizen = st.selectbox("Senior Citizen", ["No", "Yes"])
-        partner = st.selectbox("Partner", ["Yes", "No"])
-        dependents = st.selectbox("Dependents", ["Yes", "No"])
-        tenure_months = st.number_input(
-            "Tenure (Months)", min_value=0, max_value=100, value=12
-        )
-        phone_service = st.selectbox("Phone Service", ["Yes", "No"])
-
-    with col2:
-        multiple_lines = st.selectbox(
-            "Multiple Lines", ["No", "Yes", "No phone service"]
-        )
-        internet_service = st.selectbox(
-            "Internet Service", ["DSL", "Fiber optic", "No"]
-        )
-        online_security = st.selectbox(
-            "Online Security", ["No", "Yes", "No internet service"]
-        )
-        online_backup = st.selectbox(
-            "Online Backup", ["No", "Yes", "No internet service"]
-        )
-        device_protection = st.selectbox(
-            "Device Protection", ["No", "Yes", "No internet service"]
-        )
-        tech_support = st.selectbox(
-            "Tech Support", ["No", "Yes", "No internet service"]
-        )
-
-    with col3:
-        streaming_tv = st.selectbox(
-            "Streaming TV", ["No", "Yes", "No internet service"]
-        )
-        streaming_movies = st.selectbox(
-            "Streaming Movies", ["No", "Yes", "No internet service"]
-        )
-        contract = st.selectbox(
-            "Contract", ["Month-to-month", "One year", "Two year"]
-        )
-        paperless_billing = st.selectbox(
-            "Paperless Billing", ["Yes", "No"]
-        )
-        payment_method = st.selectbox(
-            "Payment Method",
-            [
-                "Electronic check",
-                "Mailed check",
-                "Bank transfer (automatic)",
-                "Credit card (automatic)"
-            ]
-        )
-
-    st.subheader("Billing Information")
-
-    col4, col5 = st.columns(2)
-
-    with col4:
-        monthly_charges = st.number_input(
-            "Monthly Charges",
-            min_value=0.0,
-            value=85.5,
-            step=1.0
-        )
-
-    with col5:
-        total_charges = st.number_input(
-            "Total Charges",
-            min_value=0.0,
-            value=1026.0,
-            step=10.0
-        )
-
-    predict_button = st.form_submit_button(
-        "Predict Churn",
-        type="primary",
-        use_container_width=True
-    )
-
-if predict_button:
-
-    customer_data = {
-        "gender": gender,
-        "senior_citizen": senior_citizen,
-        "partner": partner,
-        "dependents": dependents,
-        "tenure_months": tenure_months,
-        "phone_service": phone_service,
-        "multiple_lines": multiple_lines,
-        "internet_service": internet_service,
-        "online_security": online_security,
-        "online_backup": online_backup,
-        "device_protection": device_protection,
-        "tech_support": tech_support,
-        "streaming_tv": streaming_tv,
-        "streaming_movies": streaming_movies,
-        "contract": contract,
-        "paperless_billing": paperless_billing,
-        "payment_method": payment_method,
-        "monthly_charges": monthly_charges,
-        "total_charges": total_charges
-    }
-
-    try:
-        with st.spinner("Predicting customer churn..."):
-
-            response = requests.post(
-                f"{API_URL}/predict",
-                json=customer_data,
-                timeout=30
-            )
-
-            response.raise_for_status()
-            result = response.json()
-
-        st.subheader("Prediction Result")
-
-        if result["churn_prediction"] == 1:
-            st.error("⚠️ Customer is likely to churn.")
-        else:
-            st.success("✅ Customer is unlikely to churn.")
-
-        col6, col7 = st.columns(2)
-
-        with col6:
-            st.metric("Prediction", result["churn_label"])
-
-        with col7:
-            st.metric(
-                "Churn Probability",
-                f"{result['churn_probability'] * 100:.2f}%"
-            )
-
-        st.progress(result["churn_probability"])
-
-    except requests.exceptions.RequestException as error:
-        st.error(f"Prediction request failed: {error}")
-
-
+st.sidebar.caption(
+    "Telecom Customer Churn | MLOps Platform"
+)
 
 
 # ==========================================
-# MODEL MONITORING
+# MAIN DASHBOARD HEADER
 # ==========================================
+
+st.markdown(
+    '<div class="main-title">Telecom Customer Churn</div>',
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    '<div class="main-subtitle">'
+    'Machine Learning Operations | Prediction, Monitoring and Model Management'
+    '</div>',
+    unsafe_allow_html=True
+)
 
 st.divider()
 
-st.header("📈 Model Monitoring")
-st.write("Track data drift and monitor incoming data batches.")
+# ==========================================
+# HORIZONTAL DASHBOARD NAVIGATION
+# ==========================================
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-HISTORY_PATH = PROJECT_ROOT / "logs" / "monitoring_history.csv"
+tab_prediction, tab_monitoring, tab_comparison, tab_approval = st.tabs([
+    "🔍 Customer Prediction",
+    "📈 Model Monitoring",
+    "⚖️ Model Comparison",
+    "👤 Human Approval"
+])
 
-if HISTORY_PATH.exists():
+with tab_prediction:
 
-    history_df = pd.read_csv(HISTORY_PATH)
+    st.header("Customer Churn Prediction")
+    st.write(
+        "Enter customer details to predict whether a customer "
+        "is likely to churn."
+    )
 
-    if not history_df.empty:
+    with st.form("customer_prediction_form"):
 
-        latest = history_df.iloc[-1]
+        st.subheader("Customer Information")
 
-        st.subheader("Latest Monitoring Results")
-
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3 = st.columns(3)
 
         with col1:
-            st.metric(
-                "Total Features",
-                int(latest["total_features"])
+            gender = st.selectbox("Gender", ["Male", "Female"])
+            senior_citizen = st.selectbox("Senior Citizen", ["No", "Yes"])
+            partner = st.selectbox("Partner", ["Yes", "No"])
+            dependents = st.selectbox("Dependents", ["Yes", "No"])
+            tenure_months = st.number_input(
+                "Tenure (Months)", min_value=0, max_value=100, value=12
             )
+            phone_service = st.selectbox("Phone Service", ["Yes", "No"])
 
         with col2:
-            st.metric(
-                "Drifted Features",
-                int(latest["drifted_features"])
+            multiple_lines = st.selectbox(
+                "Multiple Lines", ["No", "Yes", "No phone service"]
+            )
+            internet_service = st.selectbox(
+                "Internet Service", ["DSL", "Fiber optic", "No"]
+            )
+            online_security = st.selectbox(
+                "Online Security", ["No", "Yes", "No internet service"]
+            )
+            online_backup = st.selectbox(
+                "Online Backup", ["No", "Yes", "No internet service"]
+            )
+            device_protection = st.selectbox(
+                "Device Protection", ["No", "Yes", "No internet service"]
+            )
+            tech_support = st.selectbox(
+                "Tech Support", ["No", "Yes", "No internet service"]
             )
 
         with col3:
-            st.metric(
-                "Drift Percentage",
-                f"{latest['drift_percentage']:.2f}%"
+            streaming_tv = st.selectbox(
+                "Streaming TV", ["No", "Yes", "No internet service"]
             )
+            streaming_movies = st.selectbox(
+                "Streaming Movies", ["No", "Yes", "No internet service"]
+            )
+            contract = st.selectbox(
+                "Contract", ["Month-to-month", "One year", "Two year"]
+            )
+            paperless_billing = st.selectbox(
+                "Paperless Billing", ["Yes", "No"]
+            )
+            payment_method = st.selectbox(
+                "Payment Method",
+                [
+                    "Electronic check",
+                    "Mailed check",
+                    "Bank transfer (automatic)",
+                    "Credit card (automatic)"
+                ]
+            )
+
+        st.subheader("Billing Information")
+
+        col4, col5 = st.columns(2)
 
         with col4:
-            st.metric(
-                "Drift Threshold",
-                f"{latest['drift_threshold']:.2f}%"
+            monthly_charges = st.number_input(
+                "Monthly Charges",
+                min_value=0.0,
+                value=85.5,
+                step=1.0
             )
 
-        # Drift status
-        if latest["retraining_required"]:
-            st.warning("Drift threshold exceeded. Candidate training was triggered.")
-        else:
-            st.success("Drift is within the configured threshold.")
+        with col5:
+            total_charges = st.number_input(
+                "Total Charges",
+                min_value=0.0,
+                value=1026.0,
+                step=10.0
+            )
 
-        st.write("**Latest Batch:**", latest["batch_name"])
-        st.write("**Monitoring Timestamp:**", latest["timestamp"])
-
-        # Monitoring history
-        st.subheader("Monitoring History")
-
-        st.dataframe(
-            history_df.sort_values("timestamp", ascending=False),
-            use_container_width=True,
-            hide_index=True
+        predict_button = st.form_submit_button(
+            "Predict Churn",
+            type="primary",
+            use_container_width=True
         )
 
-        # Drift percentage chart
-        st.subheader("Drift Percentage Across Batches")
+    if predict_button:
 
-        chart_df = history_df[["batch_name", "drift_percentage"]].set_index("batch_name")
+        customer_data = {
+            "gender": gender,
+            "senior_citizen": senior_citizen,
+            "partner": partner,
+            "dependents": dependents,
+            "tenure_months": tenure_months,
+            "phone_service": phone_service,
+            "multiple_lines": multiple_lines,
+            "internet_service": internet_service,
+            "online_security": online_security,
+            "online_backup": online_backup,
+            "device_protection": device_protection,
+            "tech_support": tech_support,
+            "streaming_tv": streaming_tv,
+            "streaming_movies": streaming_movies,
+            "contract": contract,
+            "paperless_billing": paperless_billing,
+            "payment_method": payment_method,
+            "monthly_charges": monthly_charges,
+            "total_charges": total_charges
+        }
 
-        st.bar_chart(chart_df)
+        try:
+            with st.spinner("Predicting customer churn..."):
 
-        # Download latest Evidently report
-        st.subheader("Evidently Drift Report")
-
-        report_path = Path(str(latest["report_path"]))
-
-        if not report_path.is_absolute():
-            report_path = PROJECT_ROOT / report_path
-
-        if report_path.exists():
-
-            with open(report_path, "rb") as report_file:
-                st.download_button(
-                    label="Download Latest Drift Report",
-                    data=report_file.read(),
-                    file_name=report_path.name,
-                    mime="text/html"
+                response = requests.post(
+                    f"{API_URL}/predict",
+                    json=customer_data,
+                    timeout=30
                 )
 
+                response.raise_for_status()
+                result = response.json()
+
+            st.subheader("Prediction Result")
+
+            if result["churn_prediction"] == 1:
+                st.error("⚠️ Customer is likely to churn.")
+            else:
+                st.success("✅ Customer is unlikely to churn.")
+
+            col6, col7 = st.columns(2)
+
+            with col6:
+                st.metric("Prediction", result["churn_label"])
+
+            with col7:
+                st.metric(
+                    "Churn Probability",
+                    f"{result['churn_probability'] * 100:.2f}%"
+                )
+
+            st.progress(result["churn_probability"])
+
+        except requests.exceptions.RequestException as error:
+            st.error(f"Prediction request failed: {error}")
+
+
+
+
+    # ==========================================
+    # MODEL MONITORING
+    # ==========================================
+with tab_monitoring:
+
+    st.divider()
+
+    st.header("📈 Model Monitoring")
+    st.write("Track data drift and monitor incoming data batches.")
+
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    HISTORY_PATH = PROJECT_ROOT / "logs" / "monitoring_history.csv"
+
+    if HISTORY_PATH.exists():
+
+        history_df = pd.read_csv(HISTORY_PATH)
+
+        if not history_df.empty:
+
+            latest = history_df.iloc[-1]
+
+            st.subheader("Latest Monitoring Results")
+
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                st.metric(
+                    "Total Features",
+                    int(latest["total_features"])
+                )
+
+            with col2:
+                st.metric(
+                    "Drifted Features",
+                    int(latest["drifted_features"])
+                )
+
+            with col3:
+                st.metric(
+                    "Drift Percentage",
+                    f"{latest['drift_percentage']:.2f}%"
+                )
+
+            with col4:
+                st.metric(
+                    "Drift Threshold",
+                    f"{latest['drift_threshold']:.2f}%"
+                )
+
+            # Drift status
+            if latest["retraining_required"]:
+                st.warning("Drift threshold exceeded. Candidate training was triggered.")
+            else:
+                st.success("Drift is within the configured threshold.")
+
+            st.write("**Latest Batch:**", latest["batch_name"])
+            st.write("**Monitoring Timestamp:**", latest["timestamp"])
+
+            # Monitoring history
+            st.subheader("Monitoring History")
+
+            st.dataframe(
+                history_df.sort_values("timestamp", ascending=False),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            # Drift percentage chart
+            st.subheader("Drift Percentage Across Batches")
+
+            chart_df = history_df[["batch_name", "drift_percentage"]].set_index("batch_name")
+
+            st.bar_chart(chart_df)
+
+            # Download latest Evidently report
+            st.subheader("Evidently Drift Report")
+
+            report_path = Path(str(latest["report_path"]))
+
+            if not report_path.is_absolute():
+                report_path = PROJECT_ROOT / report_path
+
+            if report_path.exists():
+
+                with open(report_path, "rb") as report_file:
+                    st.download_button(
+                        label="Download Latest Drift Report",
+                        data=report_file.read(),
+                        file_name=report_path.name,
+                        mime="text/html"
+                    )
+
+            else:
+                st.info("Latest Evidently HTML report was not found.")
+
         else:
-            st.info("Latest Evidently HTML report was not found.")
+            st.info("Monitoring history is currently empty.")
 
     else:
-        st.info("Monitoring history is currently empty.")
-
-else:
-    st.info(
-        "No monitoring history available. "
-        "Run the monitoring pipeline to generate results."
-    )
+        st.info(
+            "No monitoring history available. "
+            "Run the monitoring pipeline to generate results."
+        )
 
 
 # ==========================================
 # MODEL COMPARISON
 # ==========================================
+with tab_comparison:
+    st.divider()
 
-st.divider()
+    st.header("⚖️ Model Comparison")
+    st.write("Compare the active production model against candidate models.")
 
-st.header("⚖️ Model Comparison")
-st.write("Compare the active production model against candidate models.")
+    try:
+        comparison_response = requests.get(
+            f"{API_URL}/model-comparison",
+            timeout=10
+        )
+        comparison_response.raise_for_status()
 
-try:
-    comparison_response = requests.get(
-        f"{API_URL}/model-comparison",
-        timeout=10
-    )
-    comparison_response.raise_for_status()
+        comparison_data = comparison_response.json()
 
-    comparison_data = comparison_response.json()
+        production_df = pd.DataFrame(comparison_data["production"])
+        candidates_df = pd.DataFrame(comparison_data["candidates"])
 
-    production_df = pd.DataFrame(comparison_data["production"])
-    candidates_df = pd.DataFrame(comparison_data["candidates"])
+        comparison_df = pd.concat(
+            [production_df, candidates_df],
+            ignore_index=True
+        )
 
-    comparison_df = pd.concat(
-        [production_df, candidates_df],
-        ignore_index=True
-    )
+        display_columns = [
+            "model_name",
+            "accuracy",
+            "precision",
+            "recall",
+            "f1_score",
+            "roc_auc"
+        ]
 
-    display_columns = [
-        "model_name",
-        "accuracy",
-        "precision",
-        "recall",
-        "f1_score",
-        "roc_auc"
-    ]
+        st.dataframe(
+            comparison_df[display_columns].style.format({
+                "accuracy": "{:.4f}",
+                "precision": "{:.4f}",
+                "recall": "{:.4f}",
+                "f1_score": "{:.4f}",
+                "roc_auc": "{:.4f}"
+            }),
+            use_container_width=True,
+            hide_index=True
+        )
 
-    st.dataframe(
-        comparison_df[display_columns].style.format({
-            "accuracy": "{:.4f}",
-            "precision": "{:.4f}",
-            "recall": "{:.4f}",
-            "f1_score": "{:.4f}",
-            "roc_auc": "{:.4f}"
-        }),
-        use_container_width=True,
-        hide_index=True
-    )
+        st.subheader("F1-score Comparison")
 
-    st.subheader("F1-score Comparison")
+        chart_df = comparison_df[
+            ["model_name", "f1_score"]
+        ].set_index("model_name")
 
-    chart_df = comparison_df[
-        ["model_name", "f1_score"]
-    ].set_index("model_name")
+        st.bar_chart(chart_df)
 
-    st.bar_chart(chart_df)
+        st.subheader("ROC-AUC Comparison")
 
-    st.subheader("ROC-AUC Comparison")
+        roc_df = comparison_df[
+            ["model_name", "roc_auc"]
+        ].set_index("model_name")
 
-    roc_df = comparison_df[
-        ["model_name", "roc_auc"]
-    ].set_index("model_name")
+        st.bar_chart(roc_df)
 
-    st.bar_chart(roc_df)
-
-except requests.exceptions.RequestException as error:
-    st.error(f"Unable to retrieve model comparison: {error}")
+    except requests.exceptions.RequestException as error:
+        st.error(f"Unable to retrieve model comparison: {error}")
 
 
 
 # ==========================================
 # HUMAN MODEL APPROVAL
 # ==========================================
+with tab_approval:
+    st.divider()
 
-st.divider()
+    st.header("👤 Human Model Approval")
 
-st.header("👤 Human Model Approval")
-
-st.write(
-    "Review candidate model performance and decide "
-    "which model should become the production model."
-)
-
-try:
-    approval_response = requests.get(
-        f"{API_URL}/model-comparison",
-        timeout=10
+    st.write(
+        "Review candidate model performance and decide "
+        "which model should become the production model."
     )
-    approval_response.raise_for_status()
 
-    approval_data = approval_response.json()
-
-    production_df = pd.DataFrame(approval_data["production"])
-    candidates_df = pd.DataFrame(approval_data["candidates"])
-
-    if not production_df.empty:
-
-        current_production_f1 = float(
-            production_df.iloc[0]["f1_score"]
+    try:
+        approval_response = requests.get(
+            f"{API_URL}/model-comparison",
+            timeout=10
         )
+        approval_response.raise_for_status()
 
-        st.info(
-            f"Current Production Model: "
-            f"{production_df.iloc[0]['model_name']} | "
-            f"F1-score: {current_production_f1:.4f}"
-        )
+        approval_data = approval_response.json()
 
-    else:
-        current_production_f1 = None
-        st.warning("No production model is currently registered.")
+        production_df = pd.DataFrame(approval_data["production"])
+        candidates_df = pd.DataFrame(approval_data["candidates"])
 
-    st.subheader("Select Your Approval Decision")
+        if not production_df.empty:
 
-    decision_options = {
-        "Approve Logistic Regression": "logistic_regression",
-        "Approve Decision Tree": "decision_tree",
-        "Reject Both Candidates": "reject_all"
-    }
-
-    selected_label = st.selectbox(
-        "Model Approval Decision",
-        list(decision_options.keys())
-    )
-
-    selected_decision = decision_options[selected_label]
-
-    reviewer = st.text_input(
-        "Reviewer Name",
-        placeholder="Enter your name"
-    )
-
-    lower_f1_confirmation = False
-
-    if (
-        selected_decision != "reject_all"
-        and current_production_f1 is not None
-    ):
-
-        selected_model = candidates_df[
-            candidates_df["model_name"] == selected_decision
-        ]
-
-        if not selected_model.empty:
-
-            candidate_f1 = float(
-                selected_model.iloc[0]["f1_score"]
+            current_production_f1 = float(
+                production_df.iloc[0]["f1_score"]
             )
 
-            if candidate_f1 < current_production_f1:
-
-                st.warning(
-                    f"Selected candidate F1-score ({candidate_f1:.4f}) "
-                    f"is lower than production F1-score "
-                    f"({current_production_f1:.4f})."
-                )
-
-                lower_f1_confirmation = st.checkbox(
-                    "I understand the performance difference "
-                    "and still want to approve this model."
-                )
-
-    approval_blocked = (
-        selected_decision != "reject_all"
-        and current_production_f1 is not None
-        and candidate_f1 is not None
-        and candidate_f1 < current_production_f1
-        and not lower_f1_confirmation
-    )
-
-    if st.button(
-        "Submit Approval Decision",
-        type="primary",
-        use_container_width=True,
-        disabled=approval_blocked
-    ):
-
-        if not reviewer.strip():
-            st.error("Please enter the reviewer name.")
-
-        elif (
-            selected_decision != "reject_all"
-            and current_production_f1 is not None
-            and candidate_f1 < current_production_f1
-            and not lower_f1_confirmation
-        ):
-            st.error(
-                "Please confirm the performance warning before proceeding."
+            st.info(
+                f"Current Production Model: "
+                f"{production_df.iloc[0]['model_name']} | "
+                f"F1-score: {current_production_f1:.4f}"
             )
 
         else:
+            current_production_f1 = None
+            st.warning("No production model is currently registered.")
 
-            approval_payload = {
-                "decision": selected_decision,
-                "reviewer": reviewer.strip(),
-                "confirm_lower_f1": lower_f1_confirmation
-            }
+        st.subheader("Select Your Approval Decision")
 
-            try:
-                result_response = requests.post(
-                    f"{API_URL}/approval",
-                    json=approval_payload,
-                    timeout=30
+        decision_options = {
+            "Approve Logistic Regression": "logistic_regression",
+            "Approve Decision Tree": "decision_tree",
+            "Reject Both Candidates": "reject_all"
+        }
+
+        selected_label = st.selectbox(
+            "Model Approval Decision",
+            list(decision_options.keys())
+        )
+
+        selected_decision = decision_options[selected_label]
+
+        reviewer = st.text_input(
+            "Reviewer Name",
+            placeholder="Enter your name"
+        )
+
+        lower_f1_confirmation = False
+
+        if (
+            selected_decision != "reject_all"
+            and current_production_f1 is not None
+        ):
+
+            selected_model = candidates_df[
+                candidates_df["model_name"] == selected_decision
+            ]
+
+            if not selected_model.empty:
+
+                candidate_f1 = float(
+                    selected_model.iloc[0]["f1_score"]
                 )
 
-                result_response.raise_for_status()
-                result = result_response.json()
+                if candidate_f1 < current_production_f1:
 
-                if result["status"] == "approved":
-                    st.success(result["message"])
-                    st.write(
-                        "Approval Request ID:",
-                        result["request_id"]
+                    st.warning(
+                        f"Selected candidate F1-score ({candidate_f1:.4f}) "
+                        f"is lower than production F1-score "
+                        f"({current_production_f1:.4f})."
                     )
 
-                elif result["status"] == "rejected":
-                    st.info(result["message"])
-                    st.write(
-                        "Approval Request ID:",
-                        result["request_id"]
+                    lower_f1_confirmation = st.checkbox(
+                        "I understand the performance difference "
+                        "and still want to approve this model."
                     )
 
-                else:
-                    st.warning(result["message"])
+        approval_blocked = (
+            selected_decision != "reject_all"
+            and current_production_f1 is not None
+            and candidate_f1 is not None
+            and candidate_f1 < current_production_f1
+            and not lower_f1_confirmation
+        )
 
-            except requests.exceptions.RequestException as error:
-                st.error(f"Approval request failed: {error}")
+        if st.button(
+            "Submit Approval Decision",
+            type="primary",
+            use_container_width=True,
+            disabled=approval_blocked
+        ):
 
-except requests.exceptions.RequestException as error:
-    st.error(f"Unable to load approval information: {error}")
+            if not reviewer.strip():
+                st.error("Please enter the reviewer name.")
+
+            elif (
+                selected_decision != "reject_all"
+                and current_production_f1 is not None
+                and candidate_f1 < current_production_f1
+                and not lower_f1_confirmation
+            ):
+                st.error(
+                    "Please confirm the performance warning before proceeding."
+                )
+
+            else:
+
+                approval_payload = {
+                    "decision": selected_decision,
+                    "reviewer": reviewer.strip(),
+                    "confirm_lower_f1": lower_f1_confirmation
+                }
+
+                try:
+                    result_response = requests.post(
+                        f"{API_URL}/approval",
+                        json=approval_payload,
+                        timeout=30
+                    )
+
+                    result_response.raise_for_status()
+                    result = result_response.json()
+
+                    if result["status"] == "approved":
+                        st.success(result["message"])
+                        st.write(
+                            "Approval Request ID:",
+                            result["request_id"]
+                        )
+
+                    elif result["status"] == "rejected":
+                        st.info(result["message"])
+                        st.write(
+                            "Approval Request ID:",
+                            result["request_id"]
+                        )
+
+                    else:
+                        st.warning(result["message"])
+
+                except requests.exceptions.RequestException as error:
+                    st.error(f"Approval request failed: {error}")
+
+    except requests.exceptions.RequestException as error:
+        st.error(f"Unable to load approval information: {error}")

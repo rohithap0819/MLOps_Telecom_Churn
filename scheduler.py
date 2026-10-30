@@ -34,7 +34,7 @@ def run_scheduled_training():
 
 
 # Schedule retraining every 1 minute (demonstration mode)2 AM
-schedule.every(1).minutes.do(
+schedule.every(24).hours.do(
     run_scheduled_training
 )
 
@@ -42,10 +42,10 @@ schedule.every(1).minutes.do(
 if __name__ == "__main__":
 
     print("\nScheduled retraining service started.")
-    print("Frequency: Every 1 minute (demonstration mode)")
+    print("Frequency: Every 30 seconds")
     print(f"Dataset: {SCHEDULED_DATA_PATH}")
     print("Waiting for the scheduled execution...")
 
     while True:
         schedule.run_pending()
-        time.sleep(30)
+        time.sleep(1)

@@ -1,0 +1,29 @@
+
+services:
+  telecom-churn:
+    build: .
+    container_name: telecom-churn-mlops
+
+    ports:
+      - "8501:8501"
+      - "8001:8001"
+
+    volumes:
+      # Dataset and incoming batches
+      - ./data:/app/data
+
+      # Persistent model artifacts
+      - models_data:/app/models
+
+      # Persistent logs and monitoring reports
+      - logs_data:/app/logs
+
+      # Persistent MLflow experiments
+      - mlflow_data:/app/mlruns
+
+    restart: unless-stopped
+
+volumes:
+  models_data:
+  logs_data:
+  mlflow_data:

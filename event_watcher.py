@@ -1,7 +1,7 @@
 import time
 from pathlib import Path
 
-from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
 
 from config import INCOMING_DATA_PATH
@@ -76,7 +76,7 @@ if __name__ == "__main__":
 
     event_handler = IncomingFileHandler()
 
-    observer = Observer()
+    observer = PollingObserver(timeout=2)
     observer.schedule(
         event_handler,
         str(incoming_folder),

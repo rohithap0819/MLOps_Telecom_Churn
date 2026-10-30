@@ -1,4 +1,4 @@
-
+import os
 import json
 from pathlib import Path
 
@@ -55,7 +55,7 @@ mlflow.set_experiment("Telecom_Churn_Candidate_Training")
 # 2. Load and prepare the dataset
 # --------------------------------------------------
 
-def run_candidate_training(training_data_path=DATA_PATH):
+def _run_candidate_training(training_data_path=DATA_PATH):
     print("\nNo production model has been selected or promoted.")
 
     from src.data.validate import validate_csv
@@ -324,6 +324,89 @@ def run_candidate_training(training_data_path=DATA_PATH):
     print(f"Candidate models saved in: {CANDIDATE_DIR}")
 
     print("\nNo production model has been selected or promoted.")
+
+
+# --------------------------------------------------
+# 9. Prevent simultaneous candidate training
+# --------------------------------------------------
+
+
+import time
+
+TRAINING_LOCK_PATH = PROJECT_ROOT / "logs" / "candidate_training.lock"
+
+
+def run_candidate_training(training_data_path=DATA_PATH):
+
+    lock_fd = None
+
+    try:
+        # Try to acquire the training lock
+        while True:
+            try:
+                lock_fd = os.open(
+                    str(TRAINING_LOCK_PATH),
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                )
+
+                os.write(lock_fd, str(os.getpid()).encode())
+                break
+
+            except FileExistsError:
+
+                try:
+                    existing_pid = int(
+                        TRAINING_LOCK_PATH.read_text().strip()
+                    )
+
+                    if os.name == "nt":
+                        import subprocess
+
+                        result = subprocess.run(
+                            ["tasklist", "/FI", f"PID eq {existing_pid}", "/NH"],
+                            capture_output=True,
+                            text=True
+                        )
+
+                        process_running = str(existing_pid) in result.stdout
+
+                    else:
+                        try:
+                            os.kill(existing_pid, 0)
+                            process_running = True
+                        except ProcessLookupError:
+                            process_running = False
+
+                    if process_running:
+                        print("\nAnother candidate training process is already running.")
+                        print("This training request will be skipped.")
+                        return None
+
+                    print("\nRemoving stale training lock...")
+                    TRAINING_LOCK_PATH.unlink(missing_ok=True)
+
+                except (ValueError, FileNotFoundError):
+                    print("\nRemoving invalid training lock...")
+                    TRAINING_LOCK_PATH.unlink(missing_ok=True)
+
+    except Exception:
+        if lock_fd is not None:
+            os.close(lock_fd)
+            TRAINING_LOCK_PATH.unlink(missing_ok=True)
+        raise
+
+    try:
+        print("\nTraining lock acquired.")
+        print("Candidate training started.")
+
+        return _run_candidate_training(training_data_path)
+
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+
+        TRAINING_LOCK_PATH.unlink(missing_ok=True)
+        print("\nTraining lock released.")
 
 
 if __name__ == "__main__":
