@@ -34,7 +34,7 @@ def run_scheduled_training():
 
 
 # Schedule retraining every 1 minute (demonstration mode)2 AM
-schedule.every(24).hours.do(
+schedule.every(30).seconds.do(
     run_scheduled_training
 )
 
