@@ -27,22 +27,28 @@ def run_scheduled_training():
 
     print(f"Training dataset: {SCHEDULED_DATA_PATH}")
 
-    run_candidate_training(SCHEDULED_DATA_PATH)
+    run_candidate_training(
+        SCHEDULED_DATA_PATH,
+        trigger_source="Scheduler"
+    )
 
     print("\nScheduled retraining completed.")
     print("No production model has been promoted.")
 
 
 # Schedule retraining every 1 minute (demonstration mode)2 AM
-schedule.every(30).seconds.do(
+# Schedule retraining every 1 minute (demonstration mode)
+schedule.every(1).minutes.do(
     run_scheduled_training
 )
+
+print("Next scheduled run:", schedule.next_run())
 
 
 if __name__ == "__main__":
 
     print("\nScheduled retraining service started.")
-    print("Frequency: Every 30 seconds")
+    print("Frequency: Every 1 Minutes")
     print(f"Dataset: {SCHEDULED_DATA_PATH}")
     print("Waiting for the scheduled execution...")
 

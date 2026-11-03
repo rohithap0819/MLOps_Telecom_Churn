@@ -4,6 +4,7 @@ import streamlit as st
 import requests
 from pathlib import Path
 import pandas as pd
+import json
 
 # FastAPI backend URL
 API_URL = os.getenv(
@@ -77,9 +78,7 @@ st.sidebar.divider()
 
 st.sidebar.subheader("Production Status")
 
-health_data = {}
-model_data = {}
-
+# Fetch the latest production status from FastAPI.
 try:
     health_response = requests.get(
         f"{API_URL}/health",
@@ -95,14 +94,13 @@ try:
     model_response.raise_for_status()
     model_data = model_response.json()
 
-    api_status = (
-        "Online"
-        if health_data.get("status") == "healthy"
-        else "Offline"
-    )
+    api_status = "Online"
 
-except requests.exceptions.RequestException:
+except requests.exceptions.RequestException as error:
+    health_data = {}
+    model_data = {}
     api_status = "Offline"
+    st.sidebar.error(f"Unable to connect to FastAPI: {error}")
 
 # API Status
 st.sidebar.metric(
@@ -134,6 +132,7 @@ if api_status == "Offline":
 st.sidebar.divider()
 
 if st.sidebar.button("🔄 Refresh Status", use_container_width=True):
+    st.cache_data.clear()
     st.rerun()
 
 st.sidebar.caption(
@@ -325,138 +324,293 @@ with tab_prediction:
 
 
 
-    # ==========================================
-    # MODEL MONITORING
-    # ==========================================
-with tab_monitoring:
+# ==========================================
+# LIVE MLOPS MONITORING
+# ==========================================
+
+@st.fragment(run_every="15s")
+def render_live_monitoring():
+
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+    HISTORY_PATH = PROJECT_ROOT / "logs" / "monitoring_history.csv"
+    CANDIDATE_PATH = PROJECT_ROOT / "logs" / "candidate_metrics.csv"
+    REGISTRY_PATH = (
+        PROJECT_ROOT / "models" / "production_registry.json"
+    )
+
+    st.header("Live MLOps Monitoring")
+
+    st.caption(
+        "Automatically refreshes monitoring information every 15 seconds."
+    )
+
+    if not HISTORY_PATH.exists():
+        st.info("No monitoring history available.")
+        return
+
+    history_df = pd.read_csv(HISTORY_PATH)
+
+    if history_df.empty:
+        st.info("Monitoring history is empty.")
+        return
+
+    history_df["retraining_required"] = (
+        history_df["retraining_required"]
+        .astype(str)
+        .str.lower()
+        .isin(["true", "1", "yes"])
+    )
+
+    history_df = history_df.sort_values("timestamp")
+
+    latest = history_df.iloc[-1]
+
+    # --------------------------------------
+    # OVERALL MONITORING METRICS
+    # --------------------------------------
+
+    total_batches = len(history_df)
+
+    drifted_batches = int(
+        history_df["retraining_required"].sum()
+    )
+
+    normal_batches = total_batches - drifted_batches
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    col1.metric("Total Batches", total_batches)
+    col2.metric("Normal Batches", normal_batches)
+    col3.metric("Drifted Batches", drifted_batches)
+
+    col4.metric(
+        "Latest Drift",
+        f"{latest['drift_percentage']:.2f}%"
+    )
 
     st.divider()
 
-    st.header("📈 Model Monitoring")
-    st.write("Track data drift and monitor incoming data batches.")
+    # --------------------------------------
+    # LATEST BATCH STATUS
+    # --------------------------------------
 
-    PROJECT_ROOT = Path(__file__).resolve().parents[2]
-    HISTORY_PATH = PROJECT_ROOT / "logs" / "monitoring_history.csv"
+    st.subheader("Latest Incoming Batch")
 
-    if HISTORY_PATH.exists():
+    st.write("Batch:", latest["batch_name"])
+    st.write("Timestamp:", latest["timestamp"])
 
-        history_df = pd.read_csv(HISTORY_PATH)
+    col1, col2, col3 = st.columns(3)
 
-        if not history_df.empty:
+    col1.metric(
+        "Drifted Features",
+        f"{int(latest['drifted_features'])} / "
+        f"{int(latest['total_features'])}"
+    )
 
-            latest = history_df.iloc[-1]
+    col2.metric(
+        "Drift Percentage",
+        f"{latest['drift_percentage']:.2f}%"
+    )
 
-            st.subheader("Latest Monitoring Results")
+    col3.metric(
+        "Configured Threshold",
+        f"{latest['drift_threshold']:.2f}%"
+    )
 
-            col1, col2, col3, col4 = st.columns(4)
+    if latest["retraining_required"]:
+        st.error(
+            "Drift threshold exceeded. "
+            "Candidate training was triggered."
+        )
+    else:
+        st.success(
+            "Normal batch. Drift threshold was not exceeded."
+        )
 
-            with col1:
-                st.metric(
-                    "Total Features",
-                    int(latest["total_features"])
-                )
+    st.divider()
 
-            with col2:
-                st.metric(
-                    "Drifted Features",
-                    int(latest["drifted_features"])
-                )
+    # --------------------------------------
+    # BATCH HISTORY
+    # --------------------------------------
 
-            with col3:
-                st.metric(
-                    "Drift Percentage",
-                    f"{latest['drift_percentage']:.2f}%"
-                )
+    st.subheader("Incoming Batch History")
 
-            with col4:
-                st.metric(
-                    "Drift Threshold",
-                    f"{latest['drift_threshold']:.2f}%"
-                )
+    display_df = history_df.sort_values(
+        "timestamp",
+        ascending=False
+    )
 
-            # Drift status
-            if latest["retraining_required"]:
-                st.warning("Drift threshold exceeded. Candidate training was triggered.")
-            else:
-                st.success("Drift is within the configured threshold.")
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True
+    )
 
-            st.write("**Latest Batch:**", latest["batch_name"])
-            st.write("**Monitoring Timestamp:**", latest["timestamp"])
+    # --------------------------------------
+    # DRIFT CHART
+    # --------------------------------------
 
-            # Monitoring history
-            st.subheader("Monitoring History")
+    st.subheader("Data Drift Across Incoming Batches")
 
-            st.dataframe(
-                history_df.sort_values("timestamp", ascending=False),
-                use_container_width=True,
-                hide_index=True
-            )
+    chart_df = history_df[
+        ["batch_name", "drift_percentage", "drift_threshold"]
+    ].set_index("batch_name")
 
-            # Drift percentage chart
-            st.subheader("Drift Percentage Across Batches")
+    st.line_chart(chart_df)
 
-            chart_df = history_df[["batch_name", "drift_percentage"]].set_index("batch_name")
+    # --------------------------------------
+    # CANDIDATE MODEL RESULTS
+    # --------------------------------------
 
-            st.bar_chart(chart_df)
+    st.divider()
 
-            # Download latest Evidently report
-            st.subheader("Evidently Drift Report")
+    st.subheader("Candidate Model Performance")
 
-            report_path = Path(str(latest["report_path"]))
+    if CANDIDATE_PATH.exists():
 
-            if not report_path.is_absolute():
-                report_path = PROJECT_ROOT / report_path
+        candidate_df = pd.read_csv(CANDIDATE_PATH)
 
-            if report_path.exists():
+        st.dataframe(
+            candidate_df,
+            use_container_width=True,
+            hide_index=True
+        )
 
-                with open(report_path, "rb") as report_file:
-                    st.download_button(
-                        label="Download Latest Drift Report",
-                        data=report_file.read(),
-                        file_name=report_path.name,
-                        mime="text/html"
-                    )
+        if {"model_name", "f1_score"}.issubset(candidate_df.columns):
 
-            else:
-                st.info("Latest Evidently HTML report was not found.")
+            f1_df = candidate_df[
+                ["model_name", "f1_score"]
+            ].set_index("model_name")
 
-        else:
-            st.info("Monitoring history is currently empty.")
+            st.bar_chart(f1_df)
 
     else:
-        st.info(
-            "No monitoring history available. "
-            "Run the monitoring pipeline to generate results."
+        st.info("No candidate model metrics available yet.")
+
+    # --------------------------------------
+    # CURRENT PRODUCTION MODEL
+    # --------------------------------------
+
+    st.divider()
+
+    st.subheader("Production Model Status")
+
+    if REGISTRY_PATH.exists():
+
+        with open(REGISTRY_PATH, "r") as file:
+            registry = json.load(file)
+
+        col1, col2 = st.columns(2)
+
+        col1.metric(
+            "Production Model",
+            registry.get("production_model", "Unknown")
         )
+
+        col2.metric(
+            "Approval Status",
+            registry.get("approval_status", "Unknown")
+        )
+
+        st.write(
+            "Approved By:",
+            registry.get("approved_by", "Unknown")
+        )
+
+        st.write(
+            "Model Version:",
+            registry.get("model_version", "Unknown")
+        )
+
+    else:
+        st.info("Production model registry not found.")
+
+    # --------------------------------------
+    # EVIDENTLY REPORT
+    # --------------------------------------
+
+    st.divider()
+
+    st.subheader("Latest Evidently Drift Report")
+
+    report_path = Path(str(latest["report_path"]))
+
+    if not report_path.is_absolute():
+        report_path = PROJECT_ROOT / report_path
+
+    if report_path.exists():
+
+        with open(report_path, "rb") as report_file:
+
+            st.download_button(
+                "Download Latest Drift Report",
+                data=report_file.read(),
+                file_name=report_path.name,
+                mime="text/html"
+            )
+
+    else:
+        st.info("Latest drift report not found.")
+
+
+with tab_monitoring:
+    render_live_monitoring()
 
 
 # ==========================================
 # MODEL COMPARISON
 # ==========================================
-with tab_comparison:
-    st.divider()
 
-    st.header("⚖️ Model Comparison")
-    st.write("Compare the active production model against candidate models.")
+@st.fragment(run_every="15s")
+def render_model_comparison():
+
+    st.header("Model Performance Comparison")
+
+    st.caption(
+        "Compare the current production model against newly trained "
+        "candidate models. Data refreshes automatically every 15 seconds."
+    )
 
     try:
-        comparison_response = requests.get(
+        # Fetch the latest production and candidate metrics.
+        response = requests.get(
             f"{API_URL}/model-comparison",
             timeout=10
         )
-        comparison_response.raise_for_status()
 
-        comparison_data = comparison_response.json()
+        response.raise_for_status()
+        comparison_data = response.json()
 
-        production_df = pd.DataFrame(comparison_data["production"])
-        candidates_df = pd.DataFrame(comparison_data["candidates"])
+        production_df = pd.DataFrame(
+            comparison_data.get("production", [])
+        )
 
+        candidates_df = pd.DataFrame(
+            comparison_data.get("candidates", [])
+        )
+
+        if production_df.empty and candidates_df.empty:
+            st.warning("No model comparison data is available.")
+            return
+
+        # Identify production and candidate models.
+        if not production_df.empty:
+            production_df["model_type"] = "Production"
+
+        if not candidates_df.empty:
+            candidates_df["model_type"] = "Candidate"
+
+        # Combine all model results.
         comparison_df = pd.concat(
             [production_df, candidates_df],
             ignore_index=True
         )
 
+        st.subheader("Model Performance Metrics")
+
         display_columns = [
+            "model_type",
             "model_name",
             "accuracy",
             "precision",
@@ -466,62 +620,150 @@ with tab_comparison:
         ]
 
         st.dataframe(
-            comparison_df[display_columns].style.format({
-                "accuracy": "{:.4f}",
-                "precision": "{:.4f}",
-                "recall": "{:.4f}",
-                "f1_score": "{:.4f}",
-                "roc_auc": "{:.4f}"
-            }),
+            comparison_df[display_columns].round(4),
             use_container_width=True,
             hide_index=True
         )
 
-        st.subheader("F1-score Comparison")
+        st.divider()
+
+        # Compare models using a selected evaluation metric.
+        st.subheader("Visual Model Comparison")
+
+        selected_metric = st.selectbox(
+            "Select Evaluation Metric",
+            [
+                "accuracy",
+                "precision",
+                "recall",
+                "f1_score",
+                "roc_auc"
+            ],
+            index=3,
+            format_func=lambda value: value.replace("_", " ").title(),
+            key="model_comparison_metric"
+        )
 
         chart_df = comparison_df[
-            ["model_name", "f1_score"]
+            ["model_name", selected_metric]
         ].set_index("model_name")
 
         st.bar_chart(chart_df)
 
-        st.subheader("ROC-AUC Comparison")
+        # Display the highest-performing model for the selected metric.
+        best_model = comparison_df.loc[
+            comparison_df[selected_metric].idxmax()
+        ]
 
-        roc_df = comparison_df[
-            ["model_name", "roc_auc"]
-        ].set_index("model_name")
-
-        st.bar_chart(roc_df)
+        st.success(
+            f"Best model by {selected_metric.replace('_', ' ').upper()}: "
+            f"{best_model['model_name']} "
+            f"({best_model[selected_metric]:.4f})"
+        )
 
     except requests.exceptions.RequestException as error:
-        st.error(f"Unable to retrieve model comparison: {error}")
+
+        st.error(
+            f"Unable to retrieve model comparison data: {error}"
+        )
+
+    except (KeyError, ValueError) as error:
+
+        st.error(
+            f"Unable to process model comparison data: {error}"
+        )
+
+
+# Display the Model Comparison interface.
+with tab_comparison:
+    render_model_comparison()
 
 
 
 # ==========================================
 # HUMAN MODEL APPROVAL
 # ==========================================
-with tab_approval:
-    st.divider()
+
+@st.fragment(run_every="15s")
+def render_human_approval():
 
     st.header("👤 Human Model Approval")
 
-    st.write(
-        "Review candidate model performance and decide "
-        "which model should become the production model."
+    st.caption(
+        "Automatically checks for pending approval requests every 15 seconds."
     )
 
     try:
-        approval_response = requests.get(
+        # Fetch the current pending approval request.
+        pending_response = requests.get(
+            f"{API_URL}/pending-approval",
+            timeout=10
+        )
+        pending_response.raise_for_status()
+        pending_data = pending_response.json()
+
+
+        # Stop if there is no pending request.
+        if pending_data.get("status") == "no_pending_request":
+            st.info(
+                "No pending approval request. "
+                "Waiting for the Scheduler or Event Watcher to trigger training."
+            )
+            return
+
+        # Fetch production and candidate model metrics.
+        comparison_response = requests.get(
             f"{API_URL}/model-comparison",
             timeout=10
         )
-        approval_response.raise_for_status()
+        comparison_response.raise_for_status()
+        comparison_data = comparison_response.json()
 
-        approval_data = approval_response.json()
+        production_df = pd.DataFrame(
+            comparison_data["production"]
+        )
 
-        production_df = pd.DataFrame(approval_data["production"])
-        candidates_df = pd.DataFrame(approval_data["candidates"])
+        candidates_df = pd.DataFrame(
+            comparison_data["candidates"]
+        )
+
+        # --------------------------------------
+        # PENDING REQUEST DETAILS
+        # --------------------------------------
+
+        st.warning("A model is waiting for human approval.")
+
+        col1, col2 = st.columns(2)
+
+        col1.metric(
+            "Request Status",
+            pending_data.get("status", "Unknown").upper()
+        )
+
+        col2.metric(
+            "Triggered By",
+            pending_data.get("trigger_source", "Unknown")
+        )
+
+        st.write(
+            "**Request ID:**",
+            pending_data.get("request_id", "Unknown")
+        )
+
+        st.write(
+            "**Created At:**",
+            pending_data.get("created_at", "Unknown")
+        )
+
+        st.divider()
+
+        # --------------------------------------
+        # PRODUCTION MODEL PERFORMANCE
+        # --------------------------------------
+
+        st.subheader("Current Production Model")
+
+        current_production_f1 = None
 
         if not production_df.empty:
 
@@ -529,15 +771,38 @@ with tab_approval:
                 production_df.iloc[0]["f1_score"]
             )
 
-            st.info(
-                f"Current Production Model: "
-                f"{production_df.iloc[0]['model_name']} | "
-                f"F1-score: {current_production_f1:.4f}"
+            st.dataframe(
+                production_df,
+                use_container_width=True,
+                hide_index=True
             )
 
         else:
-            current_production_f1 = None
-            st.warning("No production model is currently registered.")
+            st.warning(
+                "No production metrics are available."
+            )
+
+        # --------------------------------------
+        # CANDIDATE MODEL PERFORMANCE
+        # --------------------------------------
+
+        st.subheader("Candidate Model Comparison")
+
+        if candidates_df.empty:
+            st.error("No candidate model metrics are available.")
+            return
+
+        st.dataframe(
+            candidates_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        # --------------------------------------
+        # HUMAN APPROVAL DECISION
+        # --------------------------------------
+
+        st.divider()
 
         st.subheader("Select Your Approval Decision")
 
@@ -549,17 +814,24 @@ with tab_approval:
 
         selected_label = st.selectbox(
             "Model Approval Decision",
-            list(decision_options.keys())
+            list(decision_options.keys()),
+            key="approval_decision"
         )
 
         selected_decision = decision_options[selected_label]
 
         reviewer = st.text_input(
             "Reviewer Name",
-            placeholder="Enter your name"
+            placeholder="Enter your name",
+            key="approval_reviewer"
         )
 
+        candidate_f1 = None
         lower_f1_confirmation = False
+
+        # --------------------------------------
+        # LOWER F1 CONFIRMATION
+        # --------------------------------------
 
         if (
             selected_decision != "reject_all"
@@ -579,14 +851,16 @@ with tab_approval:
                 if candidate_f1 < current_production_f1:
 
                     st.warning(
-                        f"Selected candidate F1-score ({candidate_f1:.4f}) "
-                        f"is lower than production F1-score "
+                        f"Selected candidate F1-score "
+                        f"({candidate_f1:.4f}) is lower than "
+                        f"production F1-score "
                         f"({current_production_f1:.4f})."
                     )
 
                     lower_f1_confirmation = st.checkbox(
                         "I understand the performance difference "
-                        "and still want to approve this model."
+                        "and still want to approve this model.",
+                        key="lower_f1_confirmation"
                     )
 
         approval_blocked = (
@@ -597,6 +871,10 @@ with tab_approval:
             and not lower_f1_confirmation
         )
 
+        # --------------------------------------
+        # SUBMIT HUMAN DECISION
+        # --------------------------------------
+
         if st.button(
             "Submit Approval Decision",
             type="primary",
@@ -605,17 +883,8 @@ with tab_approval:
         ):
 
             if not reviewer.strip():
-                st.error("Please enter the reviewer name.")
 
-            elif (
-                selected_decision != "reject_all"
-                and current_production_f1 is not None
-                and candidate_f1 < current_production_f1
-                and not lower_f1_confirmation
-            ):
-                st.error(
-                    "Please confirm the performance warning before proceeding."
-                )
+                st.error("Please enter the reviewer name.")
 
             else:
 
@@ -626,6 +895,7 @@ with tab_approval:
                 }
 
                 try:
+
                     result_response = requests.post(
                         f"{API_URL}/approval",
                         json=approval_payload,
@@ -636,24 +906,49 @@ with tab_approval:
                     result = result_response.json()
 
                     if result["status"] == "approved":
+
                         st.success(result["message"])
+
                         st.write(
                             "Approval Request ID:",
                             result["request_id"]
+                        )
+
+                        st.info(
+                            "The approved candidate has been promoted "
+                            "to production."
                         )
 
                     elif result["status"] == "rejected":
-                        st.info(result["message"])
+
+                        st.success(result["message"])
+
                         st.write(
                             "Approval Request ID:",
                             result["request_id"]
                         )
 
-                    else:
+                    elif result["status"] == "confirmation_required":
+
                         st.warning(result["message"])
 
+                    else:
+
+                        st.info(result.get("message", str(result)))
+
                 except requests.exceptions.RequestException as error:
-                    st.error(f"Approval request failed: {error}")
+
+                    st.error(
+                        f"Approval request failed: {error}"
+                    )
 
     except requests.exceptions.RequestException as error:
-        st.error(f"Unable to load approval information: {error}")
+
+        st.error(
+            f"Unable to load approval information: {error}"
+        )
+
+
+# Display the Human Approval interface.
+with tab_approval:
+    render_human_approval()

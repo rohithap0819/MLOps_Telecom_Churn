@@ -82,12 +82,11 @@ PIDS+=("$!")
 # --------------------------------------------------
 # 5. Start Scheduled Monitoring
 # --------------------------------------------------
+#echo "Starting scheduled candidate training..."
 
-echo "Starting scheduled candidate training..."
+#python scheduler.py &
 
-python scheduler.py &
-
-PIDS+=("$!")
+#PIDS+=("$!")
 
 
 # --------------------------------------------------

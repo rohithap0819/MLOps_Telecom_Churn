@@ -15,7 +15,8 @@ from src.api.schemas import (
 from approval import (
     load_candidate_metrics,
     load_production_metrics,
-    make_approval_decision
+    make_approval_decision,
+    get_pending_approval
 )
 
 
@@ -122,6 +123,24 @@ def model_comparison():
 
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error))
+
+
+# --------------------------------------------------
+# Pending approval request endpoint
+# --------------------------------------------------
+
+@app.get("/pending-approval")
+def pending_approval():
+
+    request = get_pending_approval()
+
+    if request is None:
+        return {
+            "status": "no_pending_request",
+            "message": "There are no pending approval requests."
+        }
+
+    return request
 
 
 @app.post("/approval")

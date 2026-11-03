@@ -21,6 +21,10 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.tree import DecisionTreeClassifier
+from approval import (
+    create_pending_approval,
+    get_pending_approval
+)
 
 
 # --------------------------------------------------
@@ -324,6 +328,7 @@ def _run_candidate_training(training_data_path=DATA_PATH):
     print(f"Candidate models saved in: {CANDIDATE_DIR}")
 
     print("\nNo production model has been selected or promoted.")
+    return results_df
 
 
 # --------------------------------------------------
@@ -336,8 +341,10 @@ import time
 TRAINING_LOCK_PATH = PROJECT_ROOT / "logs" / "candidate_training.lock"
 
 
-def run_candidate_training(training_data_path=DATA_PATH):
-
+def run_candidate_training(
+    training_data_path=DATA_PATH,
+    trigger_source="Manual"
+):
     lock_fd = None
 
     try:
@@ -397,9 +404,27 @@ def run_candidate_training(training_data_path=DATA_PATH):
 
     try:
         print("\nTraining lock acquired.")
-        print("Candidate training started.")
 
-        return _run_candidate_training(training_data_path)
+        # Check whether another training request is awaiting approval.
+        pending_request = get_pending_approval()
+
+        if pending_request:
+            print("\nA previous training request is still pending approval.")
+            print("New candidate training will be skipped.")
+            print(f"Pending request ID: {pending_request['request_id']}")
+            return None
+
+        print("Candidate training started.")
+        print(f"Trigger source: {trigger_source}")
+
+        # Train and evaluate candidate models.
+        results_df = _run_candidate_training(training_data_path)
+
+        # Create an approval request only after successful training.
+        if results_df is not None and not results_df.empty:
+            create_pending_approval(trigger_source)
+
+        return results_df
 
     finally:
         if lock_fd is not None:
@@ -410,4 +435,4 @@ def run_candidate_training(training_data_path=DATA_PATH):
 
 
 if __name__ == "__main__":
-    run_candidate_training()
+    run_candidate_training(trigger_source="Manual")

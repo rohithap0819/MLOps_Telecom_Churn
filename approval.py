@@ -21,6 +21,10 @@ CANDIDATE_METRICS_PATH = PROJECT_ROOT / "logs" / "candidate_metrics.csv"
 PRODUCTION_METRICS_PATH = PROJECT_ROOT / "logs" / "production_metrics.csv"
 APPROVAL_LOG_PATH = PROJECT_ROOT / "logs" / "approval_requests.json"
 
+PENDING_APPROVAL_PATH = (
+    PROJECT_ROOT / "logs" / "pending_approval.json"
+)
+
 PRODUCTION_DIR.mkdir(parents=True, exist_ok=True)
 APPROVAL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -41,6 +45,78 @@ def save_registry(registry):
     with open(REGISTRY_PATH, "w", encoding="utf-8") as file:
         json.dump(registry, file, indent=4)
 
+
+# --------------------------------------------------
+# Pending approval request management
+# --------------------------------------------------
+
+def get_pending_approval():
+    """Return the current pending approval request, if one exists."""
+
+    if not PENDING_APPROVAL_PATH.exists():
+        return None
+
+    with open(PENDING_APPROVAL_PATH, "r", encoding="utf-8") as file:
+        request = json.load(file)
+
+    if request.get("status") == "pending":
+        return request
+
+    return None
+
+
+def create_pending_approval(trigger_source):
+    """Create a pending request after successful candidate training."""
+
+    existing_request = get_pending_approval()
+
+    if existing_request:
+        print("\nA pending approval request already exists.")
+        return existing_request
+
+    request = {
+        "request_id": datetime.now(timezone.utc).strftime(
+            "%Y%m%dT%H%M%S%fZ"
+        ),
+        "trigger_source": trigger_source,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "decision": None,
+        "reviewer": None,
+        "decision_timestamp": None
+    }
+
+    with open(PENDING_APPROVAL_PATH, "w", encoding="utf-8") as file:
+        json.dump(request, file, indent=4)
+
+    print("\nPending human approval request created.")
+    print(f"Trigger source: {trigger_source}")
+    print(f"Request ID: {request['request_id']}")
+
+    return request
+
+
+def update_pending_approval(decision, reviewer):
+    """Update the pending request after a human decision."""
+
+    request = get_pending_approval()
+
+    if request is None:
+        raise ValueError("No pending approval request found.")
+
+    request["status"] = (
+        "rejected" if decision == "reject_all" else "approved"
+    )
+    request["decision"] = decision
+    request["reviewer"] = reviewer
+    request["decision_timestamp"] = datetime.now(
+        timezone.utc
+    ).isoformat()
+
+    with open(PENDING_APPROVAL_PATH, "w", encoding="utf-8") as file:
+        json.dump(request, file, indent=4)
+
+    return request
 
 # --------------------------------------------------
 # 3. Load model metrics
@@ -235,11 +311,18 @@ def make_approval_decision(
     if decision not in valid_decisions:
         raise ValueError("Invalid model approval decision.")
 
+    pending_request = get_pending_approval()
+
+    if pending_request is None:
+        raise ValueError("There is no pending approval request.")
+
     candidate_metrics = load_candidate_metrics()
     production_metrics = load_production_metrics()
 
     if decision == "reject_all":
         record = record_decision(decision, reviewer)
+        update_pending_approval(decision, reviewer)
+
 
         return {
             "status": "rejected",
@@ -282,6 +365,7 @@ def make_approval_decision(
     record = record_decision(decision, reviewer)
 
     promote_candidate(decision, reviewer)
+    update_pending_approval(decision, reviewer)
 
     return {
         "status": "approved",
