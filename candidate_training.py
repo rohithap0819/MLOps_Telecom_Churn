@@ -59,7 +59,10 @@ mlflow.set_experiment("Telecom_Churn_Candidate_Training")
 # 2. Load and prepare the dataset
 # --------------------------------------------------
 
-def _run_candidate_training(training_data_path=DATA_PATH):
+def _run_candidate_training(
+    training_data_path=DATA_PATH,
+    trigger_source="Manual"
+):
     print("\nNo production model has been selected or promoted.")
 
     from src.data.validate import validate_csv
@@ -327,7 +330,29 @@ def _run_candidate_training(training_data_path=DATA_PATH):
     print(f"\nMetrics saved to: {METRICS_PATH}")
     print(f"Candidate models saved in: {CANDIDATE_DIR}")
 
-    print("\nNo production model has been selected or promoted.")
+    # --------------------------------------------------
+    # 9. Create production approval request
+    # --------------------------------------------------
+    # Candidate models have been trained successfully.
+    # A human must now choose which candidate, if any,
+    # should be promoted to production.
+
+    print("\n" + "=" * 55)
+    print("PRODUCTION APPROVAL REQUIRED")
+    print("=" * 55)
+
+    print("Candidate training completed successfully.")
+    print("Human approval is required before promoting a model.")
+
+    create_pending_approval(
+        trigger_source,
+        approval_type="production",
+        training_data_path=str(training_data_path)
+    )
+
+    print("\nProduction approval request created.")
+    print("No model has been promoted to production yet.")
+
     return results_df
 
 
@@ -343,7 +368,8 @@ TRAINING_LOCK_PATH = PROJECT_ROOT / "logs" / "candidate_training.lock"
 
 def run_candidate_training(
     training_data_path=DATA_PATH,
-    trigger_source="Manual"
+    trigger_source="Manual",
+    retraining_approved=False
 ):
     lock_fd = None
 
@@ -405,27 +431,57 @@ def run_candidate_training(
     try:
         print("\nTraining lock acquired.")
 
-        # Check whether another training request is awaiting approval.
+        # --------------------------------------------------------------
+        # Check for an existing pending approval request.
+        # --------------------------------------------------------------
         pending_request = get_pending_approval()
 
         if pending_request:
-            print("\nA previous training request is still pending approval.")
-            print("New candidate training will be skipped.")
+            print("\nA human approval request is already pending.")
+            print(f"Approval type: {pending_request.get('approval_type', 'unknown')}")
             print(f"Pending request ID: {pending_request['request_id']}")
+            print("Candidate training will be skipped.")
+
             return None
 
+
+        # --------------------------------------------------------------
+        # Retraining approval gate.
+        # --------------------------------------------------------------
+        # If retraining has not yet been approved by a human, create
+        # a retraining approval request and stop before training starts.
+        if not retraining_approved:
+
+            print("\nRETRAINING APPROVAL REQUIRED")
+            print("Drift-triggered retraining requires human approval.")
+
+            create_pending_approval(
+                trigger_source,
+                approval_type="retraining",
+                training_data_path=str(training_data_path)
+            )
+
+            print("\nCandidate training has NOT started.")
+            print("Waiting for human approval to retrain.")
+
+            return None
+
+
+        # --------------------------------------------------------------
+        # Human approval has been granted.
+        # Start candidate training.
+        # --------------------------------------------------------------
+        print("Retraining approved by human reviewer.")
         print("Candidate training started.")
         print(f"Trigger source: {trigger_source}")
 
         # Train and evaluate candidate models.
-        results_df = _run_candidate_training(training_data_path)
-
-        # Create an approval request only after successful training.
-        if results_df is not None and not results_df.empty:
-            create_pending_approval(trigger_source)
+        results_df = _run_candidate_training(
+            training_data_path,
+            trigger_source
+        )
 
         return results_df
-
     finally:
         if lock_fd is not None:
             os.close(lock_fd)

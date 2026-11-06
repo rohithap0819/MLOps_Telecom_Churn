@@ -41,6 +41,17 @@ class PredictionResponse(BaseModel):
 
 
 class ApprovalRequest(BaseModel):
-    decision: str
-    reviewer: str
+    decision: str = Field(
+        ...,
+        description=(
+            "Approval decision. Use approve_retraining or "
+            "reject_retraining for retraining approval, and "
+            "logistic_regression, decision_tree, or reject_all "
+            "for production approval."
+        )
+    )
+    reviewer: str = Field(
+        ...,
+        description="Name of the human reviewer."
+    )
     confirm_lower_f1: bool = False

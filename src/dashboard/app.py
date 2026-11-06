@@ -1,4 +1,3 @@
-
 import os
 import streamlit as st
 import requests
@@ -687,67 +686,243 @@ with tab_comparison:
 @st.fragment(run_every="15s")
 def render_human_approval():
 
-    st.header("👤 Human Model Approval")
+    st.header("👤 Human Approval")
 
     st.caption(
         "Automatically checks for pending approval requests every 15 seconds."
     )
 
     try:
-        # Fetch the current pending approval request.
+        # --------------------------------------------------
+        # 1. Fetch the current pending approval request
+        # --------------------------------------------------
         pending_response = requests.get(
             f"{API_URL}/pending-approval",
             timeout=10
         )
+
         pending_response.raise_for_status()
         pending_data = pending_response.json()
 
-
-        # Stop if there is no pending request.
+        # --------------------------------------------------
+        # 2. No pending request
+        # --------------------------------------------------
         if pending_data.get("status") == "no_pending_request":
             st.info(
                 "No pending approval request. "
-                "Waiting for the Scheduler or Event Watcher to trigger training."
+                "Waiting for the Event Watcher or Scheduler."
             )
             return
 
-        # Fetch production and candidate model metrics.
+        approval_type = pending_data.get(
+            "approval_type",
+            "production"
+        )
+
+        trigger_source = pending_data.get(
+            "trigger_source",
+            "Unknown"
+        )
+
+        request_id = pending_data.get(
+            "request_id",
+            "Unknown"
+        )
+
+        # ==================================================
+        # RETRAINING APPROVAL
+        # ==================================================
+
+        if approval_type == "retraining":
+
+            st.warning(
+                "⚠️ Data drift has triggered a retraining approval request."
+            )
+
+            st.subheader("🔄 Retraining Approval")
+
+            col1, col2 = st.columns(2)
+
+            col1.metric(
+                "Approval Type",
+                "Retraining"
+            )
+
+            col2.metric(
+                "Triggered By",
+                trigger_source
+            )
+
+            st.write(
+                "**Request ID:**",
+                request_id
+            )
+
+            st.write(
+                "**Created At:**",
+                pending_data.get("created_at", "Unknown")
+            )
+
+            st.divider()
+
+            st.info(
+                "The incoming batch exceeded the configured drift threshold. "
+                "Candidate model training will begin only after human approval."
+            )
+
+            st.subheader("Human Decision")
+
+            retraining_decision = st.radio(
+                "Select retraining decision",
+                [
+                    "Approve Retraining",
+                    "Reject Retraining"
+                ],
+                key="retraining_decision"
+            )
+
+            reviewer = st.text_input(
+                "Reviewer Name",
+                placeholder="Enter your name",
+                key="retraining_reviewer"
+            )
+
+            decision_mapping = {
+                "Approve Retraining": "approve_retraining",
+                "Reject Retraining": "reject_retraining"
+            }
+
+            selected_decision = decision_mapping[
+                retraining_decision
+            ]
+
+            if st.button(
+                "Submit Retraining Decision",
+                type="primary",
+                use_container_width=True,
+                key="submit_retraining_decision"
+            ):
+
+                if not reviewer.strip():
+
+                    st.error(
+                        "Please enter the reviewer name."
+                    )
+
+                else:
+
+                    approval_payload = {
+                        "decision": selected_decision,
+                        "reviewer": reviewer.strip(),
+                        "confirm_lower_f1": False
+                    }
+
+                    try:
+
+                        result_response = requests.post(
+                            f"{API_URL}/approval",
+                            json=approval_payload,
+                            timeout=30
+                        )
+
+                        result_response.raise_for_status()
+                        result = result_response.json()
+
+                        if result["status"] == "approved":
+
+                            st.success(
+                                result["message"]
+                            )
+
+                            st.write(
+                                "Approval Request ID:",
+                                result["request_id"]
+                            )
+
+                            st.info(
+                                "Retraining has been approved. "
+                                "Candidate model training is now starting."
+                            )
+
+                            st.rerun()
+
+                        elif result["status"] == "rejected":
+
+                            st.warning(
+                                result["message"]
+                            )
+
+                            st.write(
+                                "Approval Request ID:",
+                                result["request_id"]
+                            )
+
+                            st.rerun()
+
+                        else:
+
+                            st.info(
+                                result.get(
+                                    "message",
+                                    str(result)
+                                )
+                            )
+
+                    except requests.exceptions.RequestException as error:
+
+                        st.error(
+                            f"Retraining approval request failed: {error}"
+                        )
+
+            return
+
+        # ==================================================
+        # PRODUCTION APPROVAL
+        # ==================================================
+
+        st.warning(
+            "A trained candidate model is waiting for production approval."
+        )
+
+        # --------------------------------------------------
+        # Fetch production and candidate model metrics
+        # --------------------------------------------------
         comparison_response = requests.get(
             f"{API_URL}/model-comparison",
             timeout=10
         )
+
         comparison_response.raise_for_status()
         comparison_data = comparison_response.json()
 
         production_df = pd.DataFrame(
-            comparison_data["production"]
+            comparison_data.get("production", [])
         )
 
         candidates_df = pd.DataFrame(
-            comparison_data["candidates"]
+            comparison_data.get("candidates", [])
         )
 
-        # --------------------------------------
-        # PENDING REQUEST DETAILS
-        # --------------------------------------
-
-        st.warning("A model is waiting for human approval.")
+        # --------------------------------------------------
+        # Pending request details
+        # --------------------------------------------------
+        st.subheader("Production Approval")
 
         col1, col2 = st.columns(2)
 
         col1.metric(
-            "Request Status",
-            pending_data.get("status", "Unknown").upper()
+            "Approval Type",
+            "Production"
         )
 
         col2.metric(
             "Triggered By",
-            pending_data.get("trigger_source", "Unknown")
+            trigger_source
         )
 
         st.write(
             "**Request ID:**",
-            pending_data.get("request_id", "Unknown")
+            request_id
         )
 
         st.write(
@@ -757,10 +932,9 @@ def render_human_approval():
 
         st.divider()
 
-        # --------------------------------------
-        # PRODUCTION MODEL PERFORMANCE
-        # --------------------------------------
-
+        # --------------------------------------------------
+        # Current production model
+        # --------------------------------------------------
         st.subheader("Current Production Model")
 
         current_production_f1 = None
@@ -778,18 +952,22 @@ def render_human_approval():
             )
 
         else:
+
             st.warning(
                 "No production metrics are available."
             )
 
-        # --------------------------------------
-        # CANDIDATE MODEL PERFORMANCE
-        # --------------------------------------
-
+        # --------------------------------------------------
+        # Candidate model comparison
+        # --------------------------------------------------
         st.subheader("Candidate Model Comparison")
 
         if candidates_df.empty:
-            st.error("No candidate model metrics are available.")
+
+            st.error(
+                "No candidate model metrics are available."
+            )
+
             return
 
         st.dataframe(
@@ -798,13 +976,14 @@ def render_human_approval():
             hide_index=True
         )
 
-        # --------------------------------------
-        # HUMAN APPROVAL DECISION
-        # --------------------------------------
-
+        # --------------------------------------------------
+        # Human production approval decision
+        # --------------------------------------------------
         st.divider()
 
-        st.subheader("Select Your Approval Decision")
+        st.subheader(
+            "Select Production Approval Decision"
+        )
 
         decision_options = {
             "Approve Logistic Regression": "logistic_regression",
@@ -815,24 +994,25 @@ def render_human_approval():
         selected_label = st.selectbox(
             "Model Approval Decision",
             list(decision_options.keys()),
-            key="approval_decision"
+            key="production_approval_decision"
         )
 
-        selected_decision = decision_options[selected_label]
+        selected_decision = decision_options[
+            selected_label
+        ]
 
         reviewer = st.text_input(
             "Reviewer Name",
             placeholder="Enter your name",
-            key="approval_reviewer"
+            key="production_approval_reviewer"
         )
 
         candidate_f1 = None
         lower_f1_confirmation = False
 
-        # --------------------------------------
-        # LOWER F1 CONFIRMATION
-        # --------------------------------------
-
+        # --------------------------------------------------
+        # Lower F1 confirmation
+        # --------------------------------------------------
         if (
             selected_decision != "reject_all"
             and current_production_f1 is not None
@@ -860,7 +1040,7 @@ def render_human_approval():
                     lower_f1_confirmation = st.checkbox(
                         "I understand the performance difference "
                         "and still want to approve this model.",
-                        key="lower_f1_confirmation"
+                        key="production_lower_f1_confirmation"
                     )
 
         approval_blocked = (
@@ -871,20 +1051,22 @@ def render_human_approval():
             and not lower_f1_confirmation
         )
 
-        # --------------------------------------
-        # SUBMIT HUMAN DECISION
-        # --------------------------------------
-
+        # --------------------------------------------------
+        # Submit production decision
+        # --------------------------------------------------
         if st.button(
-            "Submit Approval Decision",
+            "Submit Production Decision",
             type="primary",
             use_container_width=True,
-            disabled=approval_blocked
+            disabled=approval_blocked,
+            key="submit_production_decision"
         ):
 
             if not reviewer.strip():
 
-                st.error("Please enter the reviewer name.")
+                st.error(
+                    "Please enter the reviewer name."
+                )
 
             else:
 
@@ -907,7 +1089,9 @@ def render_human_approval():
 
                     if result["status"] == "approved":
 
-                        st.success(result["message"])
+                        st.success(
+                            result["message"]
+                        )
 
                         st.write(
                             "Approval Request ID:",
@@ -915,31 +1099,44 @@ def render_human_approval():
                         )
 
                         st.info(
-                            "The approved candidate has been promoted "
-                            "to production."
+                            "The approved candidate has been "
+                            "promoted to production."
                         )
+
+                        st.rerun()
 
                     elif result["status"] == "rejected":
 
-                        st.success(result["message"])
+                        st.warning(
+                            result["message"]
+                        )
 
                         st.write(
                             "Approval Request ID:",
                             result["request_id"]
                         )
 
+                        st.rerun()
+
                     elif result["status"] == "confirmation_required":
 
-                        st.warning(result["message"])
+                        st.warning(
+                            result["message"]
+                        )
 
                     else:
 
-                        st.info(result.get("message", str(result)))
+                        st.info(
+                            result.get(
+                                "message",
+                                str(result)
+                            )
+                        )
 
                 except requests.exceptions.RequestException as error:
 
                     st.error(
-                        f"Approval request failed: {error}"
+                        f"Production approval request failed: {error}"
                     )
 
     except requests.exceptions.RequestException as error:
@@ -948,6 +1145,8 @@ def render_human_approval():
             f"Unable to load approval information: {error}"
         )
 
+
+# Display the Human Approval interface.
 
 # Display the Human Approval interface.
 with tab_approval:

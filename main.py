@@ -170,7 +170,15 @@ def run_drift_report(reference_df, current_df, batch_name):
         columns=[TARGET, "customer_id"], errors="ignore"
     )
 
-    report = Report(metrics=[DataDriftPreset()])
+    report = Report(
+        metrics=[
+            DataDriftPreset(
+                num_method="kl_div",
+                cat_method="kl_div",
+            )
+        ]
+    )
+    
     result = report.run(
         reference_data=reference_features,
         current_data=current_features,

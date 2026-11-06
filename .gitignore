@@ -52,3 +52,6 @@ logs/approval_requests.json
 
 # Runtime production registry
 models/production_registry.json
+
+data/incoming_batches/*.csv
+logs/*.json

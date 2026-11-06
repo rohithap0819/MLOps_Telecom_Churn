@@ -1,3 +1,22 @@
+"""
+SCRIPT SUMMARY:
+Manages human approval for candidate model retraining and production promotion.
+
+The workflow has two separate human approval stages:
+
+1. RETRAINING APPROVAL
+   - Data drift is detected.
+   - A retraining approval request is created.
+   - Candidate training does not start until a human approves retraining.
+
+2. PRODUCTION APPROVAL
+   - Candidate models are trained.
+   - A new production approval request is created.
+   - A human selects Logistic Regression, Decision Tree, or rejects both.
+   - Only the selected approved candidate is promoted to production.
+"""
+
+
 
 import json
 import shutil
@@ -65,7 +84,11 @@ def get_pending_approval():
     return None
 
 
-def create_pending_approval(trigger_source):
+def create_pending_approval(
+    trigger_source,
+    approval_type="production",
+    training_data_path=None
+):
     """Create a pending request after successful candidate training."""
 
     existing_request = get_pending_approval()
@@ -79,6 +102,8 @@ def create_pending_approval(trigger_source):
             "%Y%m%dT%H%M%S%fZ"
         ),
         "trigger_source": trigger_source,
+        "approval_type": approval_type,
+        "training_data_path": training_data_path,
         "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "decision": None,
@@ -90,6 +115,7 @@ def create_pending_approval(trigger_source):
         json.dump(request, file, indent=4)
 
     print("\nPending human approval request created.")
+    print(f"Approval type: {approval_type}")
     print(f"Trigger source: {trigger_source}")
     print(f"Request ID: {request['request_id']}")
 
@@ -297,36 +323,118 @@ def make_approval_decision(
     """
     Reusable approval workflow for the FastAPI backend
     and Streamlit dashboard.
+
+    This function supports two separate approval stages:
+
+    1. Retraining approval:
+       - approve_retraining
+       - reject_retraining
+
+    2. Production approval:
+       - logistic_regression
+       - decision_tree
+       - reject_all
     """
 
     if not reviewer or not reviewer.strip():
         raise ValueError("Reviewer name cannot be empty.")
-
-    valid_decisions = [
-        "logistic_regression",
-        "decision_tree",
-        "reject_all"
-    ]
-
-    if decision not in valid_decisions:
-        raise ValueError("Invalid model approval decision.")
 
     pending_request = get_pending_approval()
 
     if pending_request is None:
         raise ValueError("There is no pending approval request.")
 
+    approval_type = pending_request.get(
+        "approval_type",
+        "production"
+    )
+
+    # --------------------------------------------------------------
+    # RETRAINING APPROVAL
+    # --------------------------------------------------------------
+
+    if approval_type == "retraining":
+
+        valid_retraining_decisions = [
+            "approve_retraining",
+            "reject_retraining"
+        ]
+
+        if decision not in valid_retraining_decisions:
+            raise ValueError(
+                "Invalid retraining approval decision."
+            )
+
+        if decision == "reject_retraining":
+
+            update_pending_approval(
+                decision,
+                reviewer
+            )
+
+            return {
+                "status": "retraining_rejected",
+                "message": (
+                    "Retraining rejected. "
+                    "No candidate model will be trained."
+                ),
+                "request_id": pending_request["request_id"]
+            }
+
+        # Retraining approved.
+        update_pending_approval(
+            decision,
+            reviewer
+        )
+
+        return {
+            "status": "retraining_approved",
+            "message": (
+                "Retraining approved. "
+                "Candidate training can now proceed."
+            ),
+            "request_id": pending_request["request_id"],
+            "training_data_path": pending_request.get(
+                "training_data_path"
+            )
+        }
+
+    # --------------------------------------------------------------
+    # PRODUCTION APPROVAL
+    # --------------------------------------------------------------
+
+    valid_production_decisions = [
+        "logistic_regression",
+        "decision_tree",
+        "reject_all"
+    ]
+
+    if decision not in valid_production_decisions:
+        raise ValueError(
+            "Invalid model approval decision."
+        )
+
     candidate_metrics = load_candidate_metrics()
     production_metrics = load_production_metrics()
 
     if decision == "reject_all":
-        record = record_decision(decision, reviewer)
-        update_pending_approval(decision, reviewer)
 
+        record = record_decision(
+            decision,
+            reviewer
+        )
+
+        update_pending_approval(
+            decision,
+            reviewer
+        )
 
         return {
             "status": "rejected",
-            "message": "Both candidates rejected. Production model unchanged.",
+            "message": (
+                "Both candidates rejected. "
+                "Production model unchanged."
+            ),
             "request_id": record["request_id"]
         }
 
@@ -350,7 +458,10 @@ def make_approval_decision(
             selected.iloc[0]["f1_score"]
         )
 
-        if candidate_f1 < production_f1 and not confirm_lower_f1:
+        if (
+            candidate_f1 < production_f1
+            and not confirm_lower_f1
+        ):
             return {
                 "status": "confirmation_required",
                 "message": (
@@ -362,16 +473,47 @@ def make_approval_decision(
             }
 
     # Record and promote the approved candidate.
-    record = record_decision(decision, reviewer)
+    record = record_decision(
+        decision,
+        reviewer
+    )
 
-    promote_candidate(decision, reviewer)
-    update_pending_approval(decision, reviewer)
+    promote_candidate(
+        decision,
+        reviewer
+    )
+
+    update_pending_approval(
+        decision,
+        reviewer
+    )
 
     return {
         "status": "approved",
-        "message": f"{decision} promoted to production successfully.",
+        "message": (
+            f"{decision} promoted to production successfully."
+        ),
         "request_id": record["request_id"]
     }
+
+
+# SCRIPT SUMMARY
+# This function manages both human approval stages.
+#
+# Retraining approval:
+# - approve_retraining allows candidate training to begin.
+# - reject_retraining stops the retraining workflow.
+#
+# Production approval:
+# - logistic_regression promotes Logistic Regression.
+# - decision_tree promotes Decision Tree.
+# - reject_all rejects both candidates.
+#
+# Retraining and production decisions are validated separately
+# so a retraining decision cannot accidentally be treated as
+# a production model-selection decision.
+
+
 
 # --------------------------------------------------
 # 7. Human approval workflow
