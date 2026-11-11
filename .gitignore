@@ -55,3 +55,6 @@ models/production_registry.json
 
 data/incoming_batches/*.csv
 logs/*.json
+
+.dvc/
+*.dvc
