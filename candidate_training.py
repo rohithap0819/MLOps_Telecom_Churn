@@ -4,7 +4,6 @@ from pathlib import Path
 
 import joblib
 import mlflow
-import mlflow.sklearn
 import pandas as pd
 
 from sklearn.compose import ColumnTransformer

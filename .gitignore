@@ -46,6 +46,8 @@ Thumbs.db
 
 # Incoming demonstration batches
 data/incoming/*.csv
+data/incoming_batches/
+data/incoming_batches/*.csv
 
 # Runtime approval history
 logs/approval_requests.json
@@ -53,8 +55,13 @@ logs/approval_requests.json
 # Runtime production registry
 models/production_registry.json
 
-data/incoming_batches/*.csv
+# Runtime logs / JSON
 logs/*.json
 
+# DVC
 .dvc/
 *.dvc
+*.dvc.backup
+
+# Runtime / generated scripts and reports
+drift_report_polling_test_20261030_105449.html

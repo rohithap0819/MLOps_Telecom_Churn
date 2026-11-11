@@ -19,6 +19,7 @@ Workflow:
 """
 
 import json
+import sys
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -82,9 +83,11 @@ def update_dvc_version(incoming_file, update_result):
 
     try:
 
-        # Run DVC using the installed command.
+       # Run DVC using the same Python environment as the Event Watcher.
         result = subprocess.run(
             [
+                sys.executable,
+                "-m",
                 "dvc",
                 "add",
                 "data/train.csv"
