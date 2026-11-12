@@ -59,5 +59,4 @@ models/production_registry.json
 logs/*.json
 
 
-# Runtime / generated scripts and reports
-drift_report_polling_test_20261030_105449.html
+data/train.csv
