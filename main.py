@@ -1024,11 +1024,6 @@ def main():
 
     print("\n" + "=" * 60)
 
-    print(
-        "\nNext step:"
-        "\nThe MLOps workflow can now use drift monitoring "
-        "to determine whether retraining should be triggered."
-    )
 
 
 # ============================================================

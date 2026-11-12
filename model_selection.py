@@ -14,8 +14,10 @@ Purpose:
     4. Compare model performance using F1-score and other metrics.
     5. Select the best candidate based on mean F1-score.
     6. Train the selected candidate on the complete dataset.
-    7. Save candidate models locally.
-    8. Track parameters, metrics, and model artifacts in MLflow.
+    7. Save the selected candidate locally.
+    8. Bootstrap the selected model as the initial production baseline.
+    9. Create production metadata used by FastAPI and Streamlit.
+   10. Track parameters, metrics, and model artifacts in MLflow.
 
 This script is part of the learner-facing ML/model-selection stage.
 Human approval and automated retraining are handled later by the
@@ -23,6 +25,8 @@ MLOps workflow.
 """
 
 from pathlib import Path
+import json
+from datetime import datetime, timezone
 
 import joblib
 import mlflow
@@ -58,6 +62,14 @@ DATA_PATH = ROOT_DIR / "data" / "train.csv"
 # Directory where candidate models will be saved.
 CANDIDATE_DIR = ROOT_DIR / "models" / "candidates"
 
+# Directory used for the first production model created during
+# the initial model-selection stage.
+PRODUCTION_DIR = ROOT_DIR / "models" / "production"
+
+# Registry file used by FastAPI and Streamlit to display the
+# currently active production model.
+PRODUCTION_REGISTRY_PATH = ROOT_DIR / "models" / "production_registry.json"
+
 # File containing the model comparison results.
 METRICS_PATH = ROOT_DIR / "logs" / "model_selection_metrics.csv"
 
@@ -79,6 +91,7 @@ MLFLOW_EXPERIMENT = "Telecom_Churn_Model_Selection"
 
 # Create required directories if they do not already exist.
 CANDIDATE_DIR.mkdir(parents=True, exist_ok=True)
+PRODUCTION_DIR.mkdir(parents=True, exist_ok=True)
 METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -633,11 +646,70 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Stage 7: Log selected candidate artifact
+    # Stage 7: Bootstrap the initial production model
+    # --------------------------------------------------------
+
+    # This is the first model-selection run, so there is no previous
+    # production model to replace. The selected candidate becomes the
+    # initial production baseline so that FastAPI and Streamlit have
+    # a model available for prediction and monitoring.
+    #
+    # IMPORTANT: Future production replacements do NOT happen here.
+    # They go through the Event Watcher/Scheduler and human approval
+    # workflow implemented later in the MLOps project.
+    initial_production_model_path = (
+        PRODUCTION_DIR / "production_model.joblib"
+    )
+
+    # Save a copy of the selected, fully trained pipeline in the
+    # production directory. The candidate model is still retained
+    # separately for learning and comparison purposes.
+    joblib.dump(
+        selected_pipeline,
+        initial_production_model_path,
+    )
+
+    # Create the metadata file consumed by the FastAPI /model-info
+    # endpoint and displayed by the Streamlit Production Status panel.
+    production_registry = {
+        "production_model": winner_name,
+        "model_version": "v1",
+        "approval_status": "initial_production",
+        "selection_metric": "mean_cv_f1",
+        "selection_score": float(winner["f1_mean"]),
+        "model_path": str(initial_production_model_path.relative_to(ROOT_DIR)),
+        "source_candidate": str(selected_model_path.relative_to(ROOT_DIR)),
+        "deployed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Write the registry as readable JSON so learners can inspect it.
+    with open(
+        PRODUCTION_REGISTRY_PATH,
+        "w",
+        encoding="utf-8",
+    ) as registry_file:
+        json.dump(
+            production_registry,
+            registry_file,
+            indent=4,
+    )
+
+    print(
+        f"Initial production model saved to: "
+        f"{initial_production_model_path}"
+    )
+
+    print(
+        f"Production registry saved to: "
+        f"{PRODUCTION_REGISTRY_PATH}"
+    )
+
+    # --------------------------------------------------------
+    # Stage 8: Log selected candidate artifact
     # --------------------------------------------------------
 
     print(
-        "\nSTAGE 7 - MLflow SELECTED CANDIDATE"
+        "\nSTAGE 8 - MLflow SELECTED CANDIDATE"
     )
 
     # Create a separate MLflow run for the
@@ -733,6 +805,16 @@ def main():
     )
 
     print(
+        f"Production model: "
+        f"{initial_production_model_path}"
+    )
+
+    print(
+        f"Production registry: "
+        f"{PRODUCTION_REGISTRY_PATH}"
+    )
+
+    print(
         f"Metrics file   : "
         f"{METRICS_PATH}"
     )
@@ -742,14 +824,6 @@ def main():
         f"{MLFLOW_DIR}"
     )
 
-    print(
-        "\nNext step:"
-    )
-
-    print(
-        "Review the candidate experiments in MLflow "
-        "before moving into the main MLOps workflow."
-    )
 
 
 # ============================================================
@@ -786,12 +860,17 @@ if __name__ == "__main__":
 #
 # Outputs:
 #     models/candidates/<selected_model>.joblib
+#     models/production/production_model.joblib
+#     models/production_registry.json
 #     logs/model_selection_metrics.csv
 #     MLflow experiment and model artifacts
 #
 # Important:
-#     This script performs model selection for the learner-facing
-#     ML stage. It does not perform automated drift-triggered
-#     retraining or human approval. Those responsibilities belong
-#     to the later MLOps workflow.
+#     This script performs the initial model-selection and production
+#     bootstrap stage. The first selected model becomes the initial
+#     production baseline so the prediction API can serve it.
+#
+#     It does not perform automated drift-triggered retraining or
+#     human approval for future model replacements. Those responsibilities
+#     belong to the later MLOps workflow.
 # ============================================================
