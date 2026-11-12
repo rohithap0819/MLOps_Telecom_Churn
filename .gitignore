@@ -58,10 +58,6 @@ models/production_registry.json
 # Runtime logs / JSON
 logs/*.json
 
-# DVC
-.dvc/
-*.dvc
-*.dvc.backup
 
 # Runtime / generated scripts and reports
 drift_report_polling_test_20261030_105449.html
