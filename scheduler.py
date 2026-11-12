@@ -1,5 +1,11 @@
+# ============================================================
+# SCHEDULER
+# MLOps Telecom Churn Project
+# ============================================================
+
 """
 SCRIPT SUMMARY:
+
 Runs the time-based Scheduler for the MLOps Telecom Churn project.
 
 The Scheduler:
@@ -18,8 +24,22 @@ The Scheduler:
 10. Candidate training creates a separate production approval.
 11. Records processed files so the same CSV is not processed again.
 
+Scheduler Demo Initialization:
+
+When the Scheduler starts, it prepares a clean V0 training
+dataset from:
+
+    data/scheduler_baseline/train_v0.csv
+
+This prevents the learner from having to manually run:
+
+    dvc checkout V0
+
+before starting the Scheduler demonstration.
+
 Important:
 The Scheduler does NOT generate incoming data.
+
 A user manually places a new CSV inside:
 
     data/incoming/
@@ -35,6 +55,8 @@ The Scheduler only detects and processes that file.
 import json
 import time
 import subprocess
+import shutil
+
 import schedule
 
 from datetime import datetime, timezone
@@ -61,6 +83,26 @@ TRAINING_DATA_PATH = PROJECT_ROOT / "data" / "train.csv"
 
 # DVC metadata file.
 DVC_FILE_PATH = PROJECT_ROOT / "data" / "train.csv.dvc"
+
+# ------------------------------------------------------------
+# Scheduler V0 baseline
+# ------------------------------------------------------------
+# This is a permanent clean copy of the original V0 dataset.
+#
+# The Scheduler uses this file when starting a demonstration
+# so that train.csv always begins from a known V0 state.
+#
+# IMPORTANT:
+# This file should NOT be modified during the MLOps workflow.
+# ------------------------------------------------------------
+
+SCHEDULER_BASELINE_DIR = (
+    PROJECT_ROOT / "data" / "scheduler_baseline"
+)
+
+SCHEDULER_BASELINE_PATH = (
+    SCHEDULER_BASELINE_DIR / "train_v0.csv"
+)
 
 # Shared DVC dataset version history.
 HISTORY_FILE = (
@@ -99,6 +141,98 @@ INCOMING_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ============================================================
+# PREPARE CLEAN SCHEDULER V0 BASELINE
+# ============================================================
+
+def prepare_scheduler_baseline():
+    """
+    Prepare the clean V0 training dataset for the Scheduler demo.
+
+    The Scheduler demonstration should always start from:
+
+        data/scheduler_baseline/train_v0.csv
+
+    and copy that dataset into:
+
+        data/train.csv
+
+    This avoids requiring the learner to manually run:
+
+        dvc checkout V0
+
+    before starting the Scheduler.
+
+    IMPORTANT:
+    The baseline file itself is never modified.
+
+    Returns:
+        None
+    """
+
+    print("\n" + "=" * 60)
+    print("PREPARING SCHEDULER V0 BASELINE")
+    print("=" * 60)
+
+    # --------------------------------------------------------
+    # Check whether the permanent V0 baseline exists.
+    # --------------------------------------------------------
+
+    if not SCHEDULER_BASELINE_PATH.exists():
+
+        raise FileNotFoundError(
+            "\nScheduler V0 baseline was not found.\n\n"
+            f"Expected file:\n"
+            f"    {SCHEDULER_BASELINE_PATH}\n\n"
+            "Please make sure the project contains:\n"
+            "    data/scheduler_baseline/train_v0.csv\n\n"
+            "This file is required so the Scheduler can start "
+            "the demonstration from a clean V0 dataset."
+        )
+
+    # --------------------------------------------------------
+    # Read the clean V0 dataset.
+    # --------------------------------------------------------
+
+    baseline_df = pd.read_csv(
+        SCHEDULER_BASELINE_PATH
+    )
+
+    # --------------------------------------------------------
+    # Copy V0 into the working training dataset.
+    #
+    # train.csv is the dataset that the rest of the MLOps
+    # workflow works with.
+    #
+    # train_v0.csv remains untouched.
+    # --------------------------------------------------------
+
+    baseline_df.to_csv(
+        TRAINING_DATA_PATH,
+        index=False
+    )
+
+    print(
+        "\nClean V0 baseline prepared successfully."
+    )
+
+    print(
+        f"V0 baseline rows : {len(baseline_df)}"
+    )
+
+    print(
+        f"V0 baseline file : {SCHEDULER_BASELINE_PATH}"
+    )
+
+    print(
+        f"Training dataset  : {TRAINING_DATA_PATH}"
+    )
+
+    print(
+        "\nScheduler will now start from V0."
+    )
+
+
+# ============================================================
 # LOAD DATASET VERSION HISTORY
 # ============================================================
 
@@ -114,15 +248,21 @@ def load_dataset_version_history():
         return []
 
     try:
+
         with open(
             HISTORY_FILE,
             "r",
             encoding="utf-8",
         ) as file:
+
             return json.load(file)
 
     except (json.JSONDecodeError, OSError):
-        print("Warning: Could not read dataset version history.")
+
+        print(
+            "Warning: Could not read dataset version history."
+        )
+
         return []
 
 
@@ -145,14 +285,17 @@ def is_file_already_processed(incoming_file):
         return False
 
     try:
+
         with open(
             PROCESSED_FILES,
             "r",
             encoding="utf-8",
         ) as file:
+
             processed_files = json.load(file)
 
     except (json.JSONDecodeError, OSError):
+
         return False
 
     incoming_name = Path(incoming_file).name
@@ -181,22 +324,27 @@ def mark_file_as_processed(incoming_file):
     if PROCESSED_FILES.exists():
 
         try:
+
             with open(
                 PROCESSED_FILES,
                 "r",
                 encoding="utf-8",
             ) as file:
+
                 processed_files = json.load(file)
 
         except (json.JSONDecodeError, OSError):
+
             processed_files = []
 
     else:
+
         processed_files = []
 
     incoming_name = Path(incoming_file).name
 
     if incoming_name not in processed_files:
+
         processed_files.append(incoming_name)
 
     with open(
@@ -221,6 +369,7 @@ def update_dvc_version(incoming_file, update_result):
     Create a new DVC version after train.csv has been updated.
 
     Steps:
+
     1. Run dvc add on data/train.csv.
     2. Read the new MD5 hash.
     3. Create the next version number.
@@ -237,6 +386,7 @@ def update_dvc_version(incoming_file, update_result):
     #
     # instead of calling dvc.exe directly because the project's
     # DVC launcher may not always point to the current environment.
+
     result = subprocess.run(
         [
             "python",
@@ -276,6 +426,7 @@ def update_dvc_version(incoming_file, update_result):
             for line in file:
 
                 if "md5:" in line:
+
                     dvc_md5 = line.split(
                         ":",
                         1,
@@ -284,6 +435,7 @@ def update_dvc_version(incoming_file, update_result):
                     break
 
     if not dvc_md5:
+
         raise RuntimeError(
             "Could not find the MD5 hash in train.csv.dvc."
         )
@@ -526,7 +678,10 @@ def process_incoming_file(incoming_file):
 
     # process_incoming_batch() returns the drift percentage directly.
     # Convert it to float so the Scheduler can apply its drift policy.
-    drift_percentage = float(drift_result)
+
+    drift_percentage = float(
+        drift_result
+    )
 
     print(
         f"\nScheduler drift percentage: "
@@ -552,6 +707,7 @@ def process_incoming_file(incoming_file):
 
         # Mark the file as processed so it will not
         # be picked up again on the next Scheduler run.
+
         mark_file_as_processed(
             incoming_file
         )
@@ -583,6 +739,7 @@ def process_incoming_file(incoming_file):
     #
     # candidate_training.py will wait for the human
     # approval before actually training candidates.
+
     run_candidate_training(
         TRAINING_DATA_PATH,
         trigger_source="Scheduler",
@@ -590,6 +747,7 @@ def process_incoming_file(incoming_file):
 
     # Mark the CSV as processed after the Scheduler
     # has successfully created the approval workflow.
+
     mark_file_as_processed(
         incoming_file
     )
@@ -693,6 +851,21 @@ schedule.every(
 
 if __name__ == "__main__":
 
+    # --------------------------------------------------------
+    # IMPORTANT:
+    #
+    # Prepare the clean V0 dataset BEFORE starting the
+    # scheduled processing loop.
+    #
+    # This means the learner does not need to manually run:
+    #
+    #     dvc checkout V0
+    #
+    # before demonstrating the Scheduler.
+    # --------------------------------------------------------
+
+    prepare_scheduler_baseline()
+
     print("\n" + "=" * 60)
     print("SCHEDULED DATA PROCESSING SERVICE STARTED")
     print("=" * 60)
@@ -777,6 +950,19 @@ if __name__ == "__main__":
 #
 # The Scheduler periodically checks this directory and
 # processes one unprocessed CSV at a time.
+#
+# At startup, the Scheduler prepares a clean V0 baseline from:
+#
+#     data/scheduler_baseline/train_v0.csv
+#
+# and copies it to:
+#
+#     data/train.csv
+#
+# This allows the Scheduler demonstration to start from a
+# known V0 state without requiring the learner to manually run:
+#
+#     dvc checkout V0
 #
 # Each incoming CSV:
 #
