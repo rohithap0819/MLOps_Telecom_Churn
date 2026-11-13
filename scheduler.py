@@ -1,117 +1,100 @@
-# ============================================================
-# SCHEDULER
-# MLOps Telecom Churn Project
-# ============================================================
-
 """
-SCRIPT SUMMARY:
+Scheduler - Time-Based MLOps Workflow
+=====================================
 
-Runs the time-based Scheduler for the MLOps Telecom Churn project.
+This script demonstrates a time-based MLOps retraining workflow.
 
 The Scheduler:
 
-1. Runs at a fixed interval.
-2. Checks data/incoming/ for manually uploaded CSV files.
-3. Processes one unprocessed CSV per scheduled run.
-4. Checks the incoming data for new customer records.
-5. Appends only new customer records to data/train.csv.
-6. Creates a new DVC dataset version.
-7. Checks data drift using the training data BEFORE the new batch.
-8. Applies the Scheduler drift policy:
-       < 1% drift   -> No action
-       >= 1% drift  -> Human approval for retraining
-9. If retraining is approved, candidate training is started.
-10. Candidate training creates a separate production approval.
-11. Records processed files so the same CSV is not processed again.
+1. Runs at a fixed interval of 1 minute.
+2. Checks data/incoming/ for new CSV files.
+3. Processes one unprocessed CSV file per scheduled run.
+4. Waits until the incoming CSV is completely copied.
+5. Checks the incoming file against the current training data.
+6. Appends only new customer records to the Scheduler training dataset.
+7. Versions the updated dataset using DVC.
+8. Checks for data drift.
+9. If drift is < 1%, no action is taken.
+10. If drift is >= 1%, human approval is required for retraining.
+11. If retraining is approved, candidate models are trained.
+12. Production promotion remains a separate human approval step.
 
-Scheduler Demo Initialization:
+Training dataset used by the Scheduler:
 
-When the Scheduler starts, it prepares a clean V0 training
-dataset from:
+    data/scheduler_data/train_scheduler.csv
 
-    data/scheduler_baseline/train_v0.csv
+IMPORTANT:
+    split_and_combine.py creates the initial train_scheduler.csv.
 
-This prevents the learner from having to manually run:
+The Scheduler does NOT create or copy the training dataset.
 
-    dvc checkout V0
-
-before starting the Scheduler demonstration.
-
-Important:
-The Scheduler does NOT generate incoming data.
-
-A user manually places a new CSV inside:
+Incoming CSV files are simulated/placed into:
 
     data/incoming/
 
-The Scheduler only detects and processes that file.
+For example, simulate_incoming.py can place the prepared
+incoming batches into this folder.
+
+The Scheduler then detects those files during its next
+scheduled run.
 """
 
-
-# ============================================================
-# IMPORTS
-# ============================================================
-
 import json
-import time
 import subprocess
-import shutil
-
-import schedule
-
-from datetime import datetime, timezone
+import sys
+import time
 from pathlib import Path
 
 import pandas as pd
+import schedule
 
-from update_training_data import update_training_data
-from monitor import process_incoming_batch
+from approval import create_pending_approval, get_pending_approval
 from candidate_training import run_candidate_training
+from config import INCOMING_DATA_PATH
+from monitor import process_incoming_batch
+from update_training_data import update_training_data
 
 
 # ============================================================
-# PROJECT PATHS
+# PATH CONFIGURATION
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-# Folder where the user manually places new CSV files.
-INCOMING_DIR = PROJECT_ROOT / "data" / "incoming"
+# Folder where incoming CSV batches arrive.
+INCOMING_DIR = PROJECT_ROOT / INCOMING_DATA_PATH
 
-# Main training dataset.
-TRAINING_DATA_PATH = PROJECT_ROOT / "data" / "train.csv"
-
-# DVC metadata file.
-DVC_FILE_PATH = PROJECT_ROOT / "data" / "train.csv.dvc"
-
-# ------------------------------------------------------------
-# Scheduler V0 baseline
-# ------------------------------------------------------------
-# This is a permanent clean copy of the original V0 dataset.
+# Scheduler's mutable training dataset.
 #
-# The Scheduler uses this file when starting a demonstration
-# so that train.csv always begins from a known V0 state.
-#
-# IMPORTANT:
-# This file should NOT be modified during the MLOps workflow.
-# ------------------------------------------------------------
-
-SCHEDULER_BASELINE_DIR = (
-    PROJECT_ROOT / "data" / "scheduler_baseline"
+# This file is created initially by split_and_combine.py.
+# The Scheduler only updates it when new incoming data arrives.
+TRAINING_DATA_PATH = (
+    PROJECT_ROOT
+    / "data"
+    / "scheduler_data"
+    / "train_scheduler.csv"
 )
 
-SCHEDULER_BASELINE_PATH = (
-    SCHEDULER_BASELINE_DIR / "train_v0.csv"
+# DVC metadata file for the Scheduler training dataset.
+DVC_FILE_PATH = (
+    PROJECT_ROOT
+    / "data"
+    / "scheduler_data"
+    / "train_scheduler.csv.dvc"
 )
 
-# Shared DVC dataset version history.
-HISTORY_FILE = (
-    PROJECT_ROOT / "logs" / "dataset_version_history.json"
+# Stores incoming filenames that have already been processed.
+PROCESSED_FILES_LOG = (
+    PROJECT_ROOT
+    / "logs"
+    / "scheduler_processed_files.json"
 )
 
-# Scheduler-specific processed-file history.
-PROCESSED_FILES = (
-    PROJECT_ROOT / "logs" / "scheduler_processed_files.json"
+# Stores dataset version history.
+DATASET_VERSION_HISTORY_LOG = (
+    PROJECT_ROOT
+    / "logs"
+    / "dataset_version_history.json"
 )
 
 
@@ -119,138 +102,148 @@ PROCESSED_FILES = (
 # SCHEDULER SETTINGS
 # ============================================================
 
-# The Scheduler checks for manually uploaded files every minute.
+# Scheduler checks for new data every 1 minute.
 SCHEDULE_INTERVAL_MINUTES = 1
 
-# Scheduler drift policy:
-#
-# Drift < 1%
-#     No retraining action.
-#
-# Drift >= 1%
-#     Human approval is required before retraining.
-#
-# IMPORTANT:
-# Unlike Event Watcher, the Scheduler does NOT automatically
-# retrain when drift is greater than 50%.
+# Drift below 1% requires no action.
 NO_ACTION_DRIFT_THRESHOLD = 1.0
 
+# Number of consecutive checks for file stability.
+# This prevents the Scheduler from reading a partially
+# copied CSV.
+STABLE_FILE_CHECKS = 3
 
-# Make sure the incoming directory exists.
-INCOMING_DIR.mkdir(parents=True, exist_ok=True)
+# Maximum time to wait for an incoming file to become stable.
+STABLE_FILE_TIMEOUT = 60
 
 
 # ============================================================
-# PREPARE CLEAN SCHEDULER V0 BASELINE
+# DIRECTORY SETUP
 # ============================================================
 
-def prepare_scheduler_baseline():
+def ensure_directories():
     """
-    Prepare the clean V0 training dataset for the Scheduler demo.
+    Create directories required by the Scheduler.
 
-    The Scheduler demonstration should always start from:
+    The training dataset itself is NOT created here.
+    It must already exist because split_and_combine.py
+    creates it.
+    """
 
-        data/scheduler_baseline/train_v0.csv
+    # Create the incoming directory if required.
+    INCOMING_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    and copy that dataset into:
+    # Make sure the Scheduler dataset parent directory exists.
+    TRAINING_DATA_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-        data/train.csv
+    # Create the logs directory.
+    PROCESSED_FILES_LOG.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    This avoids requiring the learner to manually run:
 
-        dvc checkout V0
+# ============================================================
+# PROCESSED FILE HISTORY
+# ============================================================
 
-    before starting the Scheduler.
-
-    IMPORTANT:
-    The baseline file itself is never modified.
+def load_processed_files():
+    """
+    Load the list of incoming files that have already
+    been processed.
 
     Returns:
-        None
+        set: Processed file names.
     """
 
-    print("\n" + "=" * 60)
-    print("PREPARING SCHEDULER V0 BASELINE")
-    print("=" * 60)
+    if not PROCESSED_FILES_LOG.exists():
+        return set()
 
-    # --------------------------------------------------------
-    # Check whether the permanent V0 baseline exists.
-    # --------------------------------------------------------
+    try:
 
-    if not SCHEDULER_BASELINE_PATH.exists():
+        with open(
+            PROCESSED_FILES_LOG,
+            "r",
+            encoding="utf-8",
+        ) as file:
 
-        raise FileNotFoundError(
-            "\nScheduler V0 baseline was not found.\n\n"
-            f"Expected file:\n"
-            f"    {SCHEDULER_BASELINE_PATH}\n\n"
-            "Please make sure the project contains:\n"
-            "    data/scheduler_baseline/train_v0.csv\n\n"
-            "This file is required so the Scheduler can start "
-            "the demonstration from a clean V0 dataset."
+            data = json.load(file)
+
+        return set(data)
+
+    except (json.JSONDecodeError, OSError):
+
+        print(
+            "Warning: Could not read processed file history."
         )
 
-    # --------------------------------------------------------
-    # Read the clean V0 dataset.
-    # --------------------------------------------------------
+        print(
+            "Starting with an empty processing history."
+        )
 
-    baseline_df = pd.read_csv(
-        SCHEDULER_BASELINE_PATH
+        return set()
+
+
+def save_processed_files(processed_files):
+    """
+    Save processed file names to the history file.
+    """
+
+    PROCESSED_FILES_LOG.parent.mkdir(
+        parents=True,
+        exist_ok=True,
     )
 
-    # --------------------------------------------------------
-    # Copy V0 into the working training dataset.
-    #
-    # train.csv is the dataset that the rest of the MLOps
-    # workflow works with.
-    #
-    # train_v0.csv remains untouched.
-    # --------------------------------------------------------
+    with open(
+        PROCESSED_FILES_LOG,
+        "w",
+        encoding="utf-8",
+    ) as file:
 
-    baseline_df.to_csv(
-        TRAINING_DATA_PATH,
-        index=False
-    )
+        json.dump(
+            sorted(processed_files),
+            file,
+            indent=4,
+        )
 
-    print(
-        "\nClean V0 baseline prepared successfully."
-    )
 
-    print(
-        f"V0 baseline rows : {len(baseline_df)}"
-    )
+def mark_file_as_processed(file_name):
+    """
+    Add a file to the processed-file history.
+    """
 
-    print(
-        f"V0 baseline file : {SCHEDULER_BASELINE_PATH}"
-    )
+    processed_files = load_processed_files()
 
-    print(
-        f"Training dataset  : {TRAINING_DATA_PATH}"
-    )
+    processed_files.add(file_name)
 
-    print(
-        "\nScheduler will now start from V0."
-    )
+    save_processed_files(processed_files)
 
 
 # ============================================================
-# LOAD DATASET VERSION HISTORY
+# DATASET VERSION HISTORY
 # ============================================================
 
 def load_dataset_version_history():
     """
-    Load the shared DVC dataset version history.
+    Load the Scheduler's dataset version history.
 
-    Event Watcher and Scheduler use the same history file so
-    that dataset versions remain part of one continuous lineage.
+    Returns:
+        list: Dataset version records.
     """
 
-    if not HISTORY_FILE.exists():
+    if not DATASET_VERSION_HISTORY_LOG.exists():
         return []
 
     try:
 
         with open(
-            HISTORY_FILE,
+            DATASET_VERSION_HISTORY_LOG,
             "r",
             encoding="utf-8",
         ) as file:
@@ -266,242 +259,18 @@ def load_dataset_version_history():
         return []
 
 
-# ============================================================
-# CHECK WHETHER A FILE WAS ALREADY PROCESSED
-# ============================================================
-
-def is_file_already_processed(incoming_file):
+def save_dataset_version_history(history):
     """
-    Check whether the Scheduler has already processed this CSV.
-
-    This is separate from DVC history because a CSV containing
-    zero new customer records does not create a DVC version.
-
-    Therefore, even a zero-new-record file must still be remembered
-    as processed.
+    Save dataset version history.
     """
 
-    if not PROCESSED_FILES.exists():
-        return False
-
-    try:
-
-        with open(
-            PROCESSED_FILES,
-            "r",
-            encoding="utf-8",
-        ) as file:
-
-            processed_files = json.load(file)
-
-    except (json.JSONDecodeError, OSError):
-
-        return False
-
-    incoming_name = Path(incoming_file).name
-
-    return incoming_name in processed_files
-
-
-# ============================================================
-# MARK FILE AS PROCESSED
-# ============================================================
-
-def mark_file_as_processed(incoming_file):
-    """
-    Add the incoming CSV filename to the Scheduler's
-    processed-file history.
-
-    This prevents the same file from being processed again
-    during future Scheduler checks.
-    """
-
-    PROCESSED_FILES.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    if PROCESSED_FILES.exists():
-
-        try:
-
-            with open(
-                PROCESSED_FILES,
-                "r",
-                encoding="utf-8",
-            ) as file:
-
-                processed_files = json.load(file)
-
-        except (json.JSONDecodeError, OSError):
-
-            processed_files = []
-
-    else:
-
-        processed_files = []
-
-    incoming_name = Path(incoming_file).name
-
-    if incoming_name not in processed_files:
-
-        processed_files.append(incoming_name)
-
-    with open(
-        PROCESSED_FILES,
-        "w",
-        encoding="utf-8",
-    ) as file:
-
-        json.dump(
-            processed_files,
-            file,
-            indent=4,
-        )
-
-
-# ============================================================
-# CREATE DVC DATASET VERSION
-# ============================================================
-
-def update_dvc_version(incoming_file, update_result):
-    """
-    Create a new DVC version after train.csv has been updated.
-
-    Steps:
-
-    1. Run dvc add on data/train.csv.
-    2. Read the new MD5 hash.
-    3. Create the next version number.
-    4. Store the dataset lineage information.
-    """
-
-    print("\nCreating DVC dataset version...")
-
-    # Use the project's Python environment to run DVC.
-    #
-    # This is intentionally:
-    #
-    #     python -m dvc
-    #
-    # instead of calling dvc.exe directly because the project's
-    # DVC launcher may not always point to the current environment.
-
-    result = subprocess.run(
-        [
-            "python",
-            "-m",
-            "dvc",
-            "add",
-            "data/train.csv",
-        ],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-    )
-
-    if result.returncode != 0:
-
-        print("DVC command failed.")
-        print(result.stderr)
-
-        raise RuntimeError(
-            "Could not create DVC dataset version."
-        )
-
-    # --------------------------------------------------------
-    # Read the DVC MD5 hash.
-    # --------------------------------------------------------
-
-    dvc_md5 = None
-
-    if DVC_FILE_PATH.exists():
-
-        with open(
-            DVC_FILE_PATH,
-            "r",
-            encoding="utf-8",
-        ) as file:
-
-            for line in file:
-
-                if "md5:" in line:
-
-                    dvc_md5 = line.split(
-                        ":",
-                        1,
-                    )[1].strip()
-
-                    break
-
-    if not dvc_md5:
-
-        raise RuntimeError(
-            "Could not find the MD5 hash in train.csv.dvc."
-        )
-
-    # --------------------------------------------------------
-    # Load existing dataset history.
-    # --------------------------------------------------------
-
-    history = load_dataset_version_history()
-
-    # Create the next dataset version.
-    version_number = len(history) + 1
-    version_label = f"V{version_number}"
-
-    # --------------------------------------------------------
-    # Create dataset lineage record.
-    # --------------------------------------------------------
-
-    version_record = {
-
-        "version": version_label,
-
-        "timestamp": datetime.now(
-            timezone.utc
-        ).isoformat(),
-
-        "dataset": "data/train.csv",
-
-        "incoming_batch": str(
-            Path(incoming_file).relative_to(
-                PROJECT_ROOT
-            )
-        ),
-
-        "previous_rows": update_result[
-            "previous_rows"
-        ],
-
-        "incoming_rows": update_result[
-            "incoming_rows"
-        ],
-
-        "new_records": update_result[
-            "new_records"
-        ],
-
-        "updated_rows": update_result[
-            "updated_rows"
-        ],
-
-        "dvc_md5": dvc_md5,
-    }
-
-    history.append(version_record)
-
-    # --------------------------------------------------------
-    # Save updated dataset history.
-    # --------------------------------------------------------
-
-    HISTORY_FILE.parent.mkdir(
+    DATASET_VERSION_HISTORY_LOG.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
     with open(
-        HISTORY_FILE,
+        DATASET_VERSION_HISTORY_LOG,
         "w",
         encoding="utf-8",
     ) as file:
@@ -512,190 +281,467 @@ def update_dvc_version(incoming_file, update_result):
             indent=4,
         )
 
-    print("\nDVC version created successfully.")
 
-    print(
-        f"Dataset version : {version_label}"
-    )
+# ============================================================
+# DVC VERSIONING
+# ============================================================
 
-    print(
-        f"DVC MD5         : {dvc_md5}"
-    )
+def version_dataset_with_dvc():
+    """
+    Track the updated Scheduler training dataset using DVC.
 
-    return version_record
+    Returns:
+        bool:
+            True  -> DVC completed successfully.
+            False -> DVC failed.
+    """
+
+    print("\n" + "=" * 60)
+    print("DVC DATASET VERSIONING")
+    print("=" * 60)
+
+    try:
+
+        # Use the same Python environment that is
+        # running the Scheduler.
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "dvc",
+                "add",
+                "data/scheduler_data/train_scheduler.csv",
+            ],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+
+            print("\nDVC versioning failed.")
+
+            if result.stdout.strip():
+                print(result.stdout)
+
+            if result.stderr.strip():
+                print(result.stderr)
+
+            return False
+
+        print(
+            "\nDVC versioning completed successfully."
+        )
+
+        if result.stdout.strip():
+            print(result.stdout)
+
+        # Make sure the DVC metadata file was created.
+        if not DVC_FILE_PATH.exists():
+
+            print(
+                "\nERROR: DVC command completed but "
+                "the .dvc metadata file was not found."
+            )
+
+            return False
+
+        # Load existing dataset version history.
+        history = load_dataset_version_history()
+
+        # Create a simple version number.
+        version_number = len(history) + 1
+
+        version_entry = {
+            "version": f"V{version_number}",
+            "timestamp": time.strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
+            "dataset": str(
+                TRAINING_DATA_PATH.relative_to(
+                    PROJECT_ROOT
+                )
+            ),
+        }
+
+        history.append(version_entry)
+
+        save_dataset_version_history(history)
+
+        print(
+            f"\nDataset version created: "
+            f"V{version_number}"
+        )
+
+        print(
+            f"Dataset history: "
+            f"{DATASET_VERSION_HISTORY_LOG}"
+        )
+
+        return True
+
+    except Exception as exc:
+
+        print(
+            f"\nError while running DVC: {exc}"
+        )
+
+        return False
 
 
 # ============================================================
-# PROCESS ONE MANUALLY UPLOADED CSV
+# FIND NEXT INCOMING FILE
+# ============================================================
+
+def find_next_incoming_file():
+    """
+    Find the next unprocessed CSV file.
+
+    The Scheduler processes only ONE file during
+    each scheduled run.
+
+    Returns:
+        Path or None.
+    """
+
+    processed_files = load_processed_files()
+
+    csv_files = sorted(
+        INCOMING_DIR.glob("*.csv")
+    )
+
+    for file_path in csv_files:
+
+        if file_path.name not in processed_files:
+
+            return file_path
+
+    return None
+
+
+# ============================================================
+# WAIT FOR FILE TO BECOME STABLE
+# ============================================================
+
+def wait_for_stable_file(
+    file_path,
+    stable_checks=STABLE_FILE_CHECKS,
+    timeout=STABLE_FILE_TIMEOUT,
+):
+    """
+    Wait until the incoming file has finished copying.
+
+    The file is considered stable when its size and
+    modification time remain unchanged for several
+    consecutive checks.
+
+    This is useful when simulate_incoming.py is copying
+    a batch into data/incoming/.
+    """
+
+    print(
+        "\nChecking whether the incoming file "
+        "has finished copying..."
+    )
+
+    previous_signature = None
+    consecutive_stable_checks = 0
+
+    for _ in range(timeout):
+
+        time.sleep(1)
+
+        if not file_path.exists():
+
+            print(
+                "\nIncoming file disappeared "
+                "while waiting."
+            )
+
+            return False
+
+        stat = file_path.stat()
+
+        current_signature = (
+            stat.st_size,
+            stat.st_mtime_ns,
+        )
+
+        if (
+            current_signature
+            == previous_signature
+        ):
+
+            consecutive_stable_checks += 1
+
+        else:
+
+            consecutive_stable_checks = 0
+
+        previous_signature = current_signature
+
+        if (
+            consecutive_stable_checks
+            >= stable_checks
+        ):
+
+            print(
+                "Incoming file is stable and ready."
+            )
+
+            return True
+
+    print(
+        "\nIncoming file did not become stable "
+        "within the timeout."
+    )
+
+    return False
+
+
+# ============================================================
+# PROCESS ONE INCOMING FILE
 # ============================================================
 
 def process_incoming_file(incoming_file):
     """
-    Process one manually uploaded incoming CSV.
+    Process one incoming CSV file.
 
     Workflow:
 
-        Manual CSV upload
-                ↓
-        Read current training data
-                ↓
-        Append only new customer records
-                ↓
-        DVC version
-                ↓
-        Drift check
-                ↓
-        Scheduler drift policy
-                ↓
-        Human retraining approval
-                ↓
-        Candidate training
-                ↓
-        Human production approval
+    1. Make sure the incoming file is completely copied.
+    2. Load the current Scheduler training data.
+    3. Append only new customer records.
+    4. Version the updated dataset using DVC.
+    5. Check data drift.
+    6. If drift < 1%, take no action.
+    7. If drift >= 1%, request human approval.
+    8. If approved, train candidate models.
+    9. Mark the incoming file as processed.
     """
 
     print("\n" + "=" * 60)
-    print("SCHEDULED DATA PROCESSING STARTED")
+    print("PROCESSING INCOMING DATA")
     print("=" * 60)
 
     print(
-        f"Incoming file: {incoming_file}"
+        f"\nIncoming file: "
+        f"{incoming_file.name}"
     )
 
     # --------------------------------------------------------
-    # STEP 1: Check whether this file was already processed.
+    # Wait for the incoming CSV to finish copying.
     # --------------------------------------------------------
 
-    if is_file_already_processed(
+    if not wait_for_stable_file(
         incoming_file
     ):
 
         print(
-            "\nThis CSV has already been processed."
+            "\nFile is not ready."
         )
 
         print(
-            "Skipping the file."
+            "This file will be checked again "
+            "during a future Scheduler run."
         )
 
         return
 
     # --------------------------------------------------------
-    # STEP 2: Load the CURRENT training data.
-    #
-    # This must happen BEFORE appending the incoming batch.
-    #
-    # We need this dataset as the reference for drift detection.
+    # Make sure the Scheduler training dataset exists.
     # --------------------------------------------------------
 
-    print(
-        "\nLoading current training dataset..."
-    )
+    if not TRAINING_DATA_PATH.exists():
+
+        print(
+            "\nERROR: Scheduler training dataset not found."
+        )
+
+        print(
+            f"\nExpected file:"
+        )
+
+        print(
+            f"  {TRAINING_DATA_PATH}"
+        )
+
+        print(
+            "\nRun split_and_combine.py first."
+        )
+
+        print(
+            "The Scheduler does not create the "
+            "initial training dataset."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # Load the current training data BEFORE adding the
+    # incoming records.
+    #
+    # This dataset is used as the reference for drift.
+    # --------------------------------------------------------
 
     reference_df = pd.read_csv(
         TRAINING_DATA_PATH
     )
 
     print(
-        f"Reference training rows: "
+        f"\nCurrent training rows: "
         f"{len(reference_df)}"
     )
 
-    # --------------------------------------------------------
-    # STEP 3: Append only genuinely new records.
-    # --------------------------------------------------------
+    # ========================================================
+    # STEP 1 — UPDATE TRAINING DATA
+    # ========================================================
 
-    print(
-        "\nUpdating training dataset..."
-    )
+    print("\n" + "=" * 60)
+    print("UPDATING TRAINING DATASET")
+    print("=" * 60)
+
+    # update_training_data() receives:
+    #
+    #   1. Incoming CSV path
+    #   2. Scheduler training dataset path
+    #
+    # The Scheduler training dataset was already
+    # created by split_and_combine.py.
 
     update_result = update_training_data(
         str(
             incoming_file.relative_to(
                 PROJECT_ROOT
             )
-        )
+        ),
+        str(
+            TRAINING_DATA_PATH.relative_to(
+                PROJECT_ROOT
+            )
+        ),
+    )
+
+    new_records = update_result[
+        "new_records"
+    ]
+
+    print(
+        f"\nNew customer records added: "
+        f"{new_records}"
+    )
+
+    print(
+        f"Updated training dataset rows: "
+        f"{update_result['updated_rows']}"
     )
 
     # --------------------------------------------------------
-    # STEP 4: Handle files that contain no new records.
+    # If there are no new customer records:
+    #
+    # - Do not create a DVC version.
+    # - Do not perform drift detection.
+    # - Mark the file as processed.
     # --------------------------------------------------------
 
-    if update_result[
-        "new_records"
-    ] == 0:
+    if new_records == 0:
 
         print(
-            "\nNo new customer records were found."
+            "\nNo new customer records were added."
         )
 
         print(
-            "DVC version will not be created."
-        )
-
-        print(
-            "This CSV has been marked as processed."
+            "Skipping DVC versioning "
+            "and drift detection."
         )
 
         mark_file_as_processed(
-            incoming_file
+            incoming_file.name
         )
 
         return
 
-    # --------------------------------------------------------
-    # STEP 5: Create a DVC dataset version.
-    # --------------------------------------------------------
+    # ========================================================
+    # STEP 2 — DVC VERSIONING
+    # ========================================================
 
-    update_dvc_version(
-        incoming_file,
-        update_result,
-    )
+    dvc_success = version_dataset_with_dvc()
 
-    # --------------------------------------------------------
-    # STEP 6: Check data drift.
-    #
-    # IMPORTANT:
-    # reference_df is the training data BEFORE the incoming
-    # batch was appended.
-    #
-    # This allows us to measure how different the incoming
-    # data is from the existing training data.
-    # --------------------------------------------------------
+    if not dvc_success:
 
-    print(
-        "\nRunning data drift check..."
-    )
+        print(
+            "\nDVC versioning failed."
+        )
 
-    drift_result = process_incoming_batch(
-        str(
+        print(
+            "The incoming file will NOT be "
+            "marked as processed."
+        )
+
+        return
+
+    # ========================================================
+    # STEP 3 — DRIFT DETECTION
+    # ========================================================
+
+    print("\n" + "=" * 60)
+    print("DRIFT DETECTION")
+    print("=" * 60)
+
+    try:
+
+        # process_incoming_batch() returns the
+        # calculated drift percentage.
+        #
+        # Example:
+        #   0.00
+        #   15.79
+        #   73.68
+
+        drift_percentage = process_incoming_batch(
             incoming_file.relative_to(
                 PROJECT_ROOT
-            )
-        ),
-        reference_df,
-    )
+            ),
+            reference_df,
+        )
 
-    # process_incoming_batch() returns the drift percentage directly.
-    # Convert it to float so the Scheduler can apply its drift policy.
+        # Convert to float in case the monitor
+        # returns a numeric type such as numpy.float64.
+        drift_percentage = float(
+            drift_percentage
+        )
 
-    drift_percentage = float(
-        drift_result
-    )
+    except Exception as exc:
+
+        print(
+            f"\nDrift detection failed: {exc}"
+        )
+
+        print(
+            "The incoming file will NOT be "
+            "marked as processed."
+        )
+
+        return
 
     print(
-        f"\nScheduler drift percentage: "
+        f"\nDetected drift: "
         f"{drift_percentage:.2f}%"
     )
 
-    # --------------------------------------------------------
-    # STEP 7: Apply Scheduler drift policy.
-    # --------------------------------------------------------
+    # ========================================================
+    # STEP 4 — APPLY DRIFT POLICY
+    # ========================================================
 
     if (
         drift_percentage
         < NO_ACTION_DRIFT_THRESHOLD
     ):
+
+        # ----------------------------------------------------
+        # CASE 1:
+        # Drift is below 1%.
+        # ----------------------------------------------------
 
         print(
             "\nDrift is below 1%."
@@ -705,26 +751,26 @@ def process_incoming_file(incoming_file):
             "No retraining action is required."
         )
 
-        # Mark the file as processed so it will not
-        # be picked up again on the next Scheduler run.
-
-        mark_file_as_processed(
-            incoming_file
+        print(
+            "No human approval is required."
         )
 
-        print(
-            "\nScheduled processing completed."
+        mark_file_as_processed(
+            incoming_file.name
         )
 
         return
 
     # --------------------------------------------------------
-    # STEP 8: Drift is >= 1%.
+    # CASE 2:
+    # Drift is 1% or higher.
     #
-    # Scheduler ALWAYS requires human approval.
+    # Scheduler always requires human approval
+    # before retraining.
     #
-    # Even if drift is greater than 50%, Scheduler does
-    # NOT automatically retrain.
+    # Unlike the Event Watcher, the Scheduler
+    # does not automatically retrain when drift
+    # becomes severe.
     # --------------------------------------------------------
 
     print(
@@ -732,262 +778,455 @@ def process_incoming_file(incoming_file):
     )
 
     print(
-        "Human approval is required for retraining."
+        "Human approval is required "
+        "before retraining."
     )
 
-    # This creates the retraining approval request.
-    #
-    # candidate_training.py will wait for the human
-    # approval before actually training candidates.
-
-    run_candidate_training(
-        TRAINING_DATA_PATH,
-        trigger_source="Scheduler",
-    )
-
-    # Mark the CSV as processed after the Scheduler
-    # has successfully created the approval workflow.
-
-    mark_file_as_processed(
-        incoming_file
-    )
+    # ========================================================
+    # STEP 5 — RETRAINING APPROVAL
+    # ========================================================
 
     print(
-        "\nRetraining approval request created."
+        "\nChecking retraining approval status..."
     )
 
-    print(
-        "After retraining approval, candidate models "
-        "will be evaluated."
+    training_data_relative = str(
+        TRAINING_DATA_PATH.relative_to(PROJECT_ROOT)
     )
 
-    print(
-        "A separate production approval will then "
-        "be required before promotion."
-    )
+    pending_request = get_pending_approval()
 
-    print(
-        "\nScheduled processing completed."
-    )
+    # --------------------------------------------------------
+    # Create a retraining approval request if one does not
+    # already exist for this Scheduler workflow.
+    # --------------------------------------------------------
+    if pending_request is None:
 
-
-# ============================================================
-# FIND NEXT UNPROCESSED CSV
-# ============================================================
-
-def find_next_incoming_file():
-    """
-    Find the oldest unprocessed CSV inside data/incoming/.
-
-    The Scheduler does not create or simulate incoming data.
-    It only looks for files manually placed in this directory.
-
-    Files are sorted by filename so timestamped files are
-    normally processed in upload/creation order.
-    """
-
-    incoming_files = sorted(
-        INCOMING_DIR.glob("*.csv")
-    )
-
-    for file_path in incoming_files:
-
-        if not is_file_already_processed(
-            file_path
-        ):
-
-            return file_path
-
-    return None
-
-
-# ============================================================
-# RUN ONE SCHEDULED CHECK
-# ============================================================
-
-def run_scheduler_job():
-    """
-    Perform one Scheduler check.
-
-    Only one CSV is processed during each scheduled run.
-    """
-
-    print("\n" + "=" * 60)
-    print("SCHEDULER CHECK")
-    print("=" * 60)
-
-    incoming_file = (
-        find_next_incoming_file()
-    )
-
-    if incoming_file is None:
+        create_pending_approval(
+            trigger_source="Scheduler",
+            approval_type="retraining",
+            training_data_path=training_data_relative,
+        )
 
         print(
-            "No new manually uploaded CSV files found."
+            "\nRetraining approval is now pending."
+        )
+
+        print(
+            "Use the existing human approval interface to "
+            "approve or reject retraining."
+        )
+
+        print(
+            "The incoming file will remain unprocessed "
+            "until a decision is made."
+        )
+
+        return
+
+    # Make sure the existing pending request belongs to
+    # this Scheduler retraining workflow.
+    if (
+        pending_request.get("approval_type") != "retraining"
+        or pending_request.get("trigger_source") != "Scheduler"
+        or pending_request.get("training_data_path")
+        != training_data_relative
+    ):
+
+        print(
+            "\nA different approval request is already pending."
+        )
+
+        print(
+            "The Scheduler will wait until that request "
+            "is completed."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # Human approval is still pending.
+    # --------------------------------------------------------
+    if pending_request.get("status") == "pending":
+
+        print(
+            "\nRetraining approval is still pending."
+        )
+
+        print(
+            "The Scheduler will check again during the "
+            "next scheduled run."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # Human rejected retraining.
+    # --------------------------------------------------------
+    if pending_request.get("decision") == "reject_retraining":
+
+        print(
+            "\nRetraining was rejected by the human reviewer."
+        )
+
+        print(
+            "No candidate models will be trained."
+        )
+
+        mark_file_as_processed(
+            incoming_file.name
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # Human approved retraining.
+    # --------------------------------------------------------
+    if pending_request.get("decision") != "approve_retraining":
+
+        print(
+            "\nApproval request has an unexpected decision."
+        )
+
+        print(
+            "The Scheduler will not start retraining."
         )
 
         return
 
     print(
-        f"New incoming CSV found: "
+        "\nRetraining approved by the human reviewer."
+    )
+
+    # ========================================================
+    # STEP 6 — CANDIDATE TRAINING
+    # ========================================================
+
+    print("\n" + "=" * 60)
+    print("STARTING CANDIDATE MODEL TRAINING")
+    print("=" * 60)
+
+    try:
+
+        training_result = run_candidate_training(
+            TRAINING_DATA_PATH,
+            trigger_source="Scheduler",
+        )
+
+        print(
+            "\nCandidate training completed."
+        )
+
+        if training_result is not None:
+
+            print(
+                f"Training result: "
+                f"{training_result}"
+            )
+
+    except Exception as exc:
+
+        print(
+            f"\nCandidate training failed: "
+            f"{exc}"
+        )
+
+        print(
+            "The incoming file will NOT be "
+            "marked as processed."
+        )
+
+        return
+
+    # ========================================================
+    # STEP 7 — COMPLETE
+    # ========================================================
+
+    mark_file_as_processed(
+        incoming_file.name
+    )
+
+    print("\n" + "=" * 60)
+    print("SCHEDULER PROCESSING COMPLETED")
+    print("=" * 60)
+
+    print(
+        f"\nProcessed file : "
         f"{incoming_file.name}"
     )
 
+    print(
+        f"Training data  : "
+        f"{TRAINING_DATA_PATH}"
+    )
+
+    print(
+        f"New records    : "
+        f"{new_records}"
+    )
+
+    print(
+        f"Drift detected : "
+        f"{drift_percentage:.2f}%"
+    )
+
+    print(
+        "Retraining     : Approved and completed"
+    )
+
+
+# ============================================================
+# SCHEDULED JOB
+# ============================================================
+
+def run_scheduler_job():
+    """
+    Execute one Scheduler cycle.
+
+    Only one unprocessed CSV file is handled
+    during each scheduled run.
+    """
+
+    print("\n\n" + "#" * 60)
+
+    print(
+        "SCHEDULER RUN"
+    )
+
+    print(
+        time.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+    )
+
+    print("#" * 60)
+
+    # Find the next unprocessed incoming CSV.
+    incoming_file = find_next_incoming_file()
+
+    if incoming_file is None:
+
+        print(
+            "\nNo new incoming CSV files found."
+        )
+
+        return
+
+    print(
+        f"\nNext file selected: "
+        f"{incoming_file.name}"
+    )
+
+    # Process only one file during this run.
     process_incoming_file(
         incoming_file
     )
 
 
 # ============================================================
-# START SCHEDULER
+# MAIN
 # ============================================================
 
-schedule.every(
-    SCHEDULE_INTERVAL_MINUTES
-).minutes.do(
-    run_scheduler_job
-)
-
-
-if __name__ == "__main__":
-
-    # --------------------------------------------------------
-    # IMPORTANT:
-    #
-    # Prepare the clean V0 dataset BEFORE starting the
-    # scheduled processing loop.
-    #
-    # This means the learner does not need to manually run:
-    #
-    #     dvc checkout V0
-    #
-    # before demonstrating the Scheduler.
-    # --------------------------------------------------------
-
-    prepare_scheduler_baseline()
+def main():
+    """
+    Start the Scheduler service.
+    """
 
     print("\n" + "=" * 60)
-    print("SCHEDULED DATA PROCESSING SERVICE STARTED")
+    print("TELECOM CHURN MLOPS SCHEDULER")
     print("=" * 60)
 
+    ensure_directories()
+
+    # --------------------------------------------------------
+    # Verify that the Scheduler training dataset exists.
+    #
+    # This dataset must have been created previously by:
+    #
+    #     python split_and_combine.py
+    #
+    # The Scheduler intentionally does not create it.
+    # --------------------------------------------------------
+
+    if not TRAINING_DATA_PATH.exists():
+
+        print(
+            "\nERROR: Scheduler training dataset "
+            "does not exist."
+        )
+
+        print(
+            f"\nExpected file:"
+        )
+
+        print(
+            f"  {TRAINING_DATA_PATH}"
+        )
+
+        print(
+            "\nRun:"
+        )
+
+        print(
+            "  python split_and_combine.py"
+        )
+
+        print(
+            "\nThen start scheduler.py again."
+        )
+
+        sys.exit(1)
+
     print(
-        f"Frequency: Every "
+        "\nTraining dataset:"
+    )
+
+    print(
+        f"  {TRAINING_DATA_PATH}"
+    )
+
+    print(
+        "\nIncoming directory:"
+    )
+
+    print(
+        f"  {INCOMING_DIR}"
+    )
+
+    print(
+        "\nScheduler interval:"
+    )
+
+    print(
+        f"  Every "
         f"{SCHEDULE_INTERVAL_MINUTES} minute(s)"
     )
 
     print(
-        f"Incoming directory: "
-        f"{INCOMING_DIR}"
+        "\nDrift policy:"
     )
 
     print(
-        "\nManual workflow:"
+        "  < 1%       -> No action"
     )
 
     print(
-        "1. Place a new CSV inside data/incoming/"
+        "  >= 1%      -> Human retraining approval"
     )
 
     print(
-        "2. Scheduler detects the CSV."
+        "  Production  -> Separate human approval"
     )
 
     print(
-        "3. New customer records are appended."
+        "\nScheduler started."
     )
 
     print(
-        "4. DVC version is created."
+        "Waiting for incoming CSV files..."
     )
 
-    print(
-        "5. Drift is checked."
+    # --------------------------------------------------------
+    # Run one check immediately when Scheduler starts.
+    # --------------------------------------------------------
+
+    run_scheduler_job()
+
+    # --------------------------------------------------------
+    # Schedule future checks every 1 minute.
+    # --------------------------------------------------------
+
+    schedule.every(
+        SCHEDULE_INTERVAL_MINUTES
+    ).minutes.do(
+        run_scheduler_job
     )
 
-    print(
-        "6. Drift >= 1% creates human retraining approval."
-    )
+    # --------------------------------------------------------
+    # Keep the Scheduler service running.
+    # --------------------------------------------------------
 
-    print(
-        "7. Approved retraining creates production approval."
-    )
+    while True:
 
-    print(
-        "\nWaiting for manually uploaded incoming data..."
-    )
+        schedule.run_pending()
 
-    print(
-        "Press Ctrl+C to stop the Scheduler."
-    )
+        time.sleep(1)
 
-    try:
 
-        while True:
+# ============================================================
+# START APPLICATION
+# ============================================================
 
-            schedule.run_pending()
-
-            time.sleep(1)
-
-    except KeyboardInterrupt:
-
-        print(
-            "\n\nScheduled data processing service stopped."
-        )
+if __name__ == "__main__":
+    main()
 
 
 # ============================================================
 # SCRIPT SUMMARY
 # ============================================================
 
-# This script implements the time-based Scheduler for the
-# Telecom Churn MLOps project.
+# Purpose:
+#   Demonstrates a time-based MLOps workflow for Telecom Churn.
 #
-# IMPORTANT:
-# The Scheduler does NOT generate incoming data.
-# The user manually places new CSV files inside:
+# Input:
+#   CSV files placed into:
 #
-#     data/incoming/
+#       data/incoming/
 #
-# The Scheduler periodically checks this directory and
-# processes one unprocessed CSV at a time.
+#   These files can be placed manually or simulated using:
 #
-# At startup, the Scheduler prepares a clean V0 baseline from:
+#       simulate_incoming.py
 #
-#     data/scheduler_baseline/train_v0.csv
+# Main dataset:
 #
-# and copies it to:
+#       data/scheduler_data/train_scheduler.csv
 #
-#     data/train.csv
+#   This dataset is initially created by:
 #
-# This allows the Scheduler demonstration to start from a
-# known V0 state without requiring the learner to manually run:
+#       split_and_combine.py
 #
-#     dvc checkout V0
+# Steps:
 #
-# Each incoming CSV:
+#   1. Run a scheduled check every 1 minute.
 #
-#   1. Is compared against the existing customer IDs.
-#   2. Only genuinely new customers are appended to train.csv.
-#   3. A new DVC dataset version is created.
-#   4. Data drift is calculated against the training data
-#      BEFORE the incoming batch was added.
+#   2. Find one unprocessed CSV from data/incoming/.
 #
-# Scheduler drift policy:
+#   3. Wait until the CSV is completely copied.
 #
-#   < 1%  -> No action.
-#   >= 1% -> Human approval required for retraining.
+#   4. Load the current Scheduler training dataset.
 #
-# The Scheduler never automatically retrains based on high drift.
+#   5. Append only new customer records.
 #
-# If retraining is approved:
+#   6. Version the updated dataset with DVC.
 #
-#   Candidate models
-#          ↓
-#   Human production approval
-#          ↓
-#   Model promotion
+#   7. Detect data drift.
 #
-# Therefore, the Scheduler provides a time-based alternative
-# to the Event Watcher while keeping the same controlled
-# human-approval workflow.
-# ============================================================
+#   8. If drift < 1%:
+#        No action.
+#
+#   9. If drift >= 1%:
+#        Create a pending human approval request.
+#
+#  10. The Scheduler waits for the human decision.
+#
+#  11. If retraining is approved:
+#        Train Logistic Regression and Decision Tree
+#        candidate models.
+#
+#  12. Production promotion remains a separate
+#      human approval stage.
+#
+# Important:
+#
+#   - One incoming file is processed per scheduled run.
+#   - The Scheduler does not generate incoming data.
+#   - simulate_incoming.py can simulate incoming batches.
+#   - The initial train_scheduler.csv is created by
+#     split_and_combine.py.
+#   - Processed files are recorded in:
+#
+#       logs/scheduler_processed_files.json
+#
+#   - Dataset version history is recorded in:
+#
+#       logs/dataset_version_history.json
