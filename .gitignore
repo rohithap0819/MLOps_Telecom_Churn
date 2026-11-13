@@ -58,5 +58,5 @@ models/production_registry.json
 # Runtime logs / JSON
 logs/*.json
 
-data/event_watcher_data/
-data/scheduler_data/
+data/event_watcher_data/*.csv
+data/scheduler_data/*.csv
