@@ -730,108 +730,167 @@ def render_live_monitoring():
 
 
     # ========================================================
-    # SCHEDULER CONFIGURATION
-    # ========================================================
-
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric(
-        "Processing Mode",
-        "Manual CSV Upload"
-    )
-
-    col2.metric(
-        "Drift Threshold",
-        "1%"
-    )
-
-    col3.metric(
-        "Schedule",
-        "Every 1 Minute"
-    )
-
-
-    # ========================================================
     # SCHEDULER BATCH HISTORY
     # ========================================================
 
     scheduler_batches = []
 
-    if HISTORY_PATH.exists():
+    # The Scheduler keeps its own processed-file history.
+    # This prevents Event Watcher batches from appearing
+    # inside the Scheduler dashboard.
+    if scheduler_history_path.exists() and HISTORY_PATH.exists():
 
-        scheduler_history_df = pd.read_csv(
-            HISTORY_PATH
-        )
+        try:
 
-        # Only display the Scheduler batches from the
-        # current Scheduler test.
-        scheduler_history_df = scheduler_history_df[
-            scheduler_history_df[
-                "batch_name"
-            ].str.startswith(
-                (
-                    "batch_1_",
-                    "batch_2_",
-                    "batch_3_"
+            with open(
+                scheduler_history_path,
+                "r"
+            ) as scheduler_file:
+
+                scheduler_processed_data = json.load(
+                    scheduler_file
                 )
-            )
-        ].copy()
 
-        scheduler_history_df = (
-            scheduler_history_df
-            .sort_values("timestamp")
-            .drop_duplicates(
-                subset=["batch_name"],
-                keep="last"
-            )
-        )
+            # scheduler_processed_files.json may contain either:
+            #   - a simple list of processed file names
+            #   - a dictionary containing a "processed_files" list
+            if isinstance(
+                scheduler_processed_data,
+                list
+            ):
 
-        for _, row in scheduler_history_df.iterrows():
+                processed_files = scheduler_processed_data
 
-            batch_name = str(
-                row["batch_name"]
-            )
+            elif isinstance(
+                scheduler_processed_data,
+                dict
+            ):
 
-            if "batch_1_" in batch_name:
-
-                display_batch = "Batch 1"
-                new_rows = 581
-
-            elif "batch_2_" in batch_name:
-
-                display_batch = "Batch 2"
-                new_rows = 581
-
-            elif "batch_3_" in batch_name:
-
-                display_batch = "Batch 3"
-                new_rows = 581
+                processed_files = (
+                    scheduler_processed_data.get(
+                        "processed_files",
+                        []
+                    )
+                )
 
             else:
 
-                continue
+                processed_files = []
 
-            drift = float(
-                row["drift_percentage"]
+            processed_files = {
+                Path(str(file_name)).stem
+                for file_name in processed_files
+            }
+
+            scheduler_history_df = pd.read_csv(
+                HISTORY_PATH
             )
 
-            # Scheduler policy:
-            # <1%  -> No Action
-            # >=1% -> Human Approval
-            if drift < 1:
+            # Only use monitoring records whose batch was
+            # actually processed by the Scheduler.
+            if (
+                processed_files
+                and "batch_name" in scheduler_history_df.columns
+            ):
 
-                action = "No Action"
+                scheduler_history_df = (
+                    scheduler_history_df[
+                        scheduler_history_df[
+                            "batch_name"
+                        ].apply(
+                            lambda batch_name:
+                                any(
+                                    str(batch_name).startswith(
+                                        processed_name
+                                    )
+                                    for processed_name
+                                    in processed_files
+                                )
+                        )
+                    ].copy()
+                )
 
             else:
 
-                action = "Human Approval"
+                scheduler_history_df = (
+                    pd.DataFrame()
+                )
 
-            scheduler_batches.append({
-                "Batch": display_batch,
-                "New Rows": f"+{new_rows}",
-                "Drift": f"{drift:.2f}%",
-                "Action": action
-            })
+            if not scheduler_history_df.empty:
+
+                scheduler_history_df = (
+                    scheduler_history_df
+                    .sort_values("timestamp")
+                    .drop_duplicates(
+                        subset=["batch_name"],
+                        keep="last"
+                    )
+                )
+
+                for _, row in scheduler_history_df.iterrows():
+
+                    batch_name = str(
+                        row["batch_name"]
+                    )
+
+                    if "batch_1_" in batch_name:
+
+                        display_batch = "Batch 1"
+
+                    elif "batch_2_" in batch_name:
+
+                        display_batch = "Batch 2"
+
+                    elif "batch_3_" in batch_name:
+
+                        display_batch = "Batch 3"
+
+                    else:
+
+                        display_batch = batch_name
+
+                    # Use the recorded number of new records when
+                    # available. Otherwise retain the learner
+                    # dataset batch size of 581 rows.
+                    new_rows = int(
+                        row.get(
+                            "new_records",
+                            581
+                        )
+                    )
+
+                    drift = float(
+                        row["drift_percentage"]
+                    )
+
+                    # Scheduler policy:
+                    # <1%  -> No Action
+                    # >=1% -> Human Approval
+                    if drift < 1:
+
+                        action = "No Action"
+
+                    else:
+
+                        action = "Human Approval"
+
+                    scheduler_batches.append({
+                        "Batch": display_batch,
+                        "New Rows": f"+{new_rows}",
+                        "Drift": f"{drift:.2f}%",
+                        "Action": action
+                    })
+
+        except (
+            json.JSONDecodeError,
+            OSError,
+            ValueError,
+            TypeError
+        ) as error:
+
+            st.warning(
+                f"Unable to load Scheduler history: {error}"
+            )
 
 
     if scheduler_batches:
@@ -855,29 +914,44 @@ def render_live_monitoring():
             "Dataset Progression"
         )
 
-        progression_col1, progression_col2, progression_col3, progression_col4 = (
-            st.columns(4)
+        # Start from the original 5,300-row learner dataset
+        # and add the new records processed by the Scheduler.
+        dataset_versions = [
+            5300
+        ]
+
+        for new_rows_text in scheduler_display_df[
+            "New Rows"
+        ]:
+
+            new_rows = int(
+                str(new_rows_text).replace(
+                    "+",
+                    ""
+                )
+            )
+
+            dataset_versions.append(
+                dataset_versions[-1] + new_rows
+            )
+
+        progression_columns = min(
+            len(dataset_versions),
+            4
         )
 
-        progression_col1.metric(
-            "V0",
-            "5,300 rows"
+        progression_cols = st.columns(
+            progression_columns
         )
 
-        progression_col2.metric(
-            "V1",
-            "5,881 rows"
-        )
+        for index in range(
+            progression_columns
+        ):
 
-        progression_col3.metric(
-            "V2",
-            "6,462 rows"
-        )
-
-        progression_col4.metric(
-            "V3",
-            "7,043 rows"
-        )
+            progression_cols[index].metric(
+                f"V{index}",
+                f"{dataset_versions[index]:,} rows"
+            )
 
 
         # ====================================================
@@ -2276,9 +2350,4 @@ with tab_approval:
 # 9. Scheduler approval activity.
 # 10. Human approval for retraining.
 # 11. Human approval for production model promotion.
-#
-# IMPORTANT:
-# The Scheduler Workflow is inside render_live_monitoring().
-# This allows it to correctly access PROJECT_ROOT and HISTORY_PATH.
-#
 # ============================================================
