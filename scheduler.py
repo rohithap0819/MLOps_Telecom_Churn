@@ -11,13 +11,15 @@ The Scheduler:
 3. Processes one unprocessed CSV file per scheduled run.
 4. Waits until the incoming CSV is completely copied.
 5. Checks the incoming file against the current training data.
-6. Appends only new customer records to the Scheduler training dataset.
-7. Versions the updated dataset using DVC.
-8. Checks for data drift.
-9. If drift is < 1%, no action is taken.
+6. Checks for data drift against the current training data.
+7. Appends only new customer records to the Scheduler training dataset.
+8. Versions the updated dataset using DVC.
+9. If drift is < 1%, no retraining action is required.
 10. If drift is >= 1%, human approval is required for retraining.
-11. If retraining is approved, candidate models are trained.
-12. Production promotion remains a separate human approval step.
+11. The data version is preserved even when retraining is rejected.
+12. If retraining is approved, candidate models are trained.
+13. Production promotion remains a separate human approval step.
+14. The Scheduler does not move to the next batch until the current batch workflow is complete.
 
 Training dataset used by the Scheduler:
 
@@ -97,6 +99,42 @@ DATASET_VERSION_HISTORY_LOG = (
     / "dataset_version_history.json"
 )
 
+# Stores which incoming file is currently waiting for a
+# retraining approval. This lets the Scheduler recognize
+# the same approval after the dashboard approves or rejects it.
+SCHEDULER_APPROVAL_STATE_LOG = (
+    PROJECT_ROOT
+    / "logs"
+    / "scheduler_approval_state.json"
+)
+
+# The approval module stores the latest approval request here.
+# We read this file so the Scheduler can recognize completed
+# decisions (approved/rejected), not only pending requests.
+PENDING_APPROVAL_PATH = (
+    PROJECT_ROOT
+    / "logs"
+    / "pending_approval.json"
+)
+
+# Complete approval history. This is the source of truth for
+# completed approval decisions because pending_approval.json may
+# be replaced or cleared after a decision is submitted.
+APPROVAL_HISTORY_PATH = (
+    PROJECT_ROOT
+    / "logs"
+    / "approval_requests.json"
+)
+
+# Stores the complete workflow state for the ONE active incoming batch.
+# This prevents the Scheduler from moving to the next batch while
+# retraining or model approval is still pending.
+SCHEDULER_WORKFLOW_STATE_LOG = (
+    PROJECT_ROOT
+    / "logs"
+    / "scheduler_workflow_state.json"
+)
+
 
 # ============================================================
 # SCHEDULER SETTINGS
@@ -144,6 +182,11 @@ def ensure_directories():
 
     # Create the logs directory.
     PROCESSED_FILES_LOG.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    SCHEDULER_WORKFLOW_STATE_LOG.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
@@ -280,6 +323,347 @@ def save_dataset_version_history(history):
             file,
             indent=4,
         )
+
+
+# ============================================================
+# SCHEDULER APPROVAL STATE
+# ============================================================
+
+def load_scheduler_approval_state():
+    """
+    Load the Scheduler-specific record that links a retraining
+    approval request to the incoming CSV file that caused it.
+
+    This is needed because approval.py's get_pending_approval()
+    returns only requests whose status is still "pending".
+    After the dashboard rejects or approves a request, the
+    Scheduler needs to know that the completed decision belongs
+    to the same incoming file.
+    """
+
+    if not SCHEDULER_APPROVAL_STATE_LOG.exists():
+        return None
+
+    try:
+        with open(
+            SCHEDULER_APPROVAL_STATE_LOG,
+            "r",
+            encoding="utf-8",
+        ) as file:
+            return json.load(file)
+
+    except (json.JSONDecodeError, OSError):
+        print(
+            "\nWarning: Could not read Scheduler approval state."
+        )
+        return None
+
+
+def save_scheduler_approval_state(
+    incoming_file_name,
+    request_id,
+):
+    """
+    Save the link between an incoming CSV and its approval request.
+    """
+
+    SCHEDULER_APPROVAL_STATE_LOG.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    state = {
+        "incoming_file": incoming_file_name,
+        "request_id": request_id,
+    }
+
+    with open(
+        SCHEDULER_APPROVAL_STATE_LOG,
+        "w",
+        encoding="utf-8",
+    ) as file:
+
+        json.dump(
+            state,
+            file,
+            indent=4,
+        )
+
+
+def clear_scheduler_approval_state():
+    """
+    Remove the Scheduler-specific approval state after the
+    associated incoming file has completed its workflow.
+    """
+
+    if SCHEDULER_APPROVAL_STATE_LOG.exists():
+        try:
+            SCHEDULER_APPROVAL_STATE_LOG.unlink()
+        except OSError:
+            pass
+
+
+def load_latest_approval_request():
+    """
+    Read the latest approval request regardless of whether it is
+    pending, approved, or rejected.
+
+    approval.py's get_pending_approval() intentionally returns
+    only pending requests, so this helper is used when the
+    Scheduler needs to recognize a completed dashboard decision.
+    """
+
+    if not PENDING_APPROVAL_PATH.exists():
+        return None
+
+    try:
+        with open(
+            PENDING_APPROVAL_PATH,
+            "r",
+            encoding="utf-8",
+        ) as file:
+
+            return json.load(file)
+
+    except (json.JSONDecodeError, OSError):
+        print(
+            "\nWarning: Could not read the latest approval request."
+        )
+        return None
+
+
+def get_scheduler_approval_for_file(
+    incoming_file_name,
+):
+    """
+    Return the approval request associated with the supplied
+    incoming file, if one exists.
+
+    Returns:
+        dict or None
+    """
+
+    scheduler_state = load_scheduler_approval_state()
+
+    if scheduler_state is None:
+        return None
+
+    if (
+        scheduler_state.get("incoming_file")
+        != incoming_file_name
+    ):
+        return None
+
+    latest_request = load_latest_approval_request()
+
+    if latest_request is None:
+        return None
+
+    if (
+        latest_request.get("request_id")
+        != scheduler_state.get("request_id")
+    ):
+        return None
+
+    return latest_request
+
+
+# ============================================================
+# SCHEDULER WORKFLOW STATE
+# ============================================================
+
+def load_scheduler_workflow_state():
+    """
+    Load the persistent workflow state for the active incoming batch.
+
+    The Scheduler processes batches sequentially. Therefore, when a
+    batch is waiting for human retraining approval or model approval,
+    the Scheduler must keep working on that same batch instead of
+    selecting the next CSV.
+    """
+
+    if not SCHEDULER_WORKFLOW_STATE_LOG.exists():
+        return None
+
+    try:
+        with open(
+            SCHEDULER_WORKFLOW_STATE_LOG,
+            "r",
+            encoding="utf-8",
+        ) as file:
+            return json.load(file)
+
+    except (json.JSONDecodeError, OSError):
+        print(
+            "\nWarning: Could not read Scheduler workflow state."
+        )
+        return None
+
+
+def save_scheduler_workflow_state(state):
+    """
+    Save the current batch workflow state.
+    """
+
+    SCHEDULER_WORKFLOW_STATE_LOG.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    with open(
+        SCHEDULER_WORKFLOW_STATE_LOG,
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(state, file, indent=4)
+
+
+def clear_scheduler_workflow_state():
+    """
+    Remove the active batch workflow state after the batch is complete.
+    """
+
+    if SCHEDULER_WORKFLOW_STATE_LOG.exists():
+        try:
+            SCHEDULER_WORKFLOW_STATE_LOG.unlink()
+        except OSError:
+            pass
+
+
+def create_scheduler_workflow_state(
+    incoming_file_name,
+    drift_percentage,
+    dataset_version=None,
+    retraining_request_id=None,
+    stage="retraining_pending",
+):
+    """
+    Create the persistent state for one incoming batch.
+
+    Stages used by the Scheduler:
+
+        retraining_pending
+        candidate_training
+        model_approval_pending
+        completed
+    """
+
+    state = {
+        "incoming_file": incoming_file_name,
+        "stage": stage,
+        "drift_percentage": float(drift_percentage),
+        "dataset_version": dataset_version,
+        "retraining_request_id": retraining_request_id,
+        "model_approval_request_id": None,
+    }
+
+    save_scheduler_workflow_state(state)
+    return state
+
+
+def update_scheduler_workflow_state(**updates):
+    """
+    Update selected fields in the active workflow state.
+    """
+
+    state = load_scheduler_workflow_state()
+
+    if state is None:
+        return None
+
+    state.update(updates)
+    save_scheduler_workflow_state(state)
+    return state
+
+
+def load_approval_history():
+    """
+    Load the complete approval history.
+
+    This file contains approval requests after they are approved
+    or rejected, so it is used to recover a completed decision
+    for the exact request ID stored in the Scheduler workflow.
+    """
+
+    if not APPROVAL_HISTORY_PATH.exists():
+        return []
+
+    try:
+        with open(
+            APPROVAL_HISTORY_PATH,
+            "r",
+            encoding="utf-8",
+        ) as file:
+            data = json.load(file)
+
+        # Normal expected format is a list of approval records.
+        if isinstance(data, list):
+            return data
+
+        # Be tolerant if the history is wrapped in a dictionary.
+        if isinstance(data, dict):
+            for key in ("requests", "approval_requests", "history"):
+                if isinstance(data.get(key), list):
+                    return data[key]
+
+        return []
+
+    except (json.JSONDecodeError, OSError):
+        print(
+            "\nWarning: Could not read approval history."
+        )
+        return []
+
+
+def get_latest_approval_for_request(request_id):
+    """
+    Find the approval decision for one exact request ID.
+
+    Lookup order:
+
+    1. Check pending_approval.json.
+    2. If it does not contain this request ID, search the complete
+       approval_requests.json history.
+
+    This prevents the Scheduler from becoming stuck when the
+    dashboard/API has already completed the approval and the
+    latest pending request no longer contains the Scheduler's ID.
+    """
+
+    # First check the latest approval file. This handles requests
+    # that are still pending and also works when the completed
+    # request remains there.
+    request = load_latest_approval_request()
+
+    if (
+        request is not None
+        and request.get("request_id") == request_id
+    ):
+        return request
+
+    # If the latest pending request does not match, search the
+    # permanent approval history using the exact Scheduler ID.
+    matching_requests = [
+        item
+        for item in load_approval_history()
+        if isinstance(item, dict)
+        and item.get("request_id") == request_id
+    ]
+
+    if matching_requests:
+        return matching_requests[-1]
+
+    return None
+
+
+def finish_current_batch(incoming_file_name):
+    """
+    Mark the active batch as complete and clear its workflow state.
+    """
+
+    mark_file_as_processed(incoming_file_name)
+    clear_scheduler_approval_state()
+    clear_scheduler_workflow_state()
 
 
 # ============================================================
@@ -505,19 +889,30 @@ def wait_for_stable_file(
 
 def process_incoming_file(incoming_file):
     """
-    Process one incoming CSV file.
+    Process one incoming CSV through the complete Scheduler workflow.
+
+    Important design rule:
+
+    The incoming data is ALWAYS appended to the Scheduler training
+    dataset and versioned with DVC after drift is calculated.
+
+    Human approval controls whether candidate retraining happens.
+    It does NOT control whether the incoming data is preserved.
 
     Workflow:
 
-    1. Make sure the incoming file is completely copied.
-    2. Load the current Scheduler training data.
-    3. Append only new customer records.
-    4. Version the updated dataset using DVC.
-    5. Check data drift.
-    6. If drift < 1%, take no action.
-    7. If drift >= 1%, request human approval.
-    8. If approved, train candidate models.
-    9. Mark the incoming file as processed.
+    1. Wait for the incoming CSV to become stable.
+    2. Detect whether this is a new or already-active workflow.
+    3. Append new records to train_scheduler.csv.
+    4. Create a DVC dataset version.
+    5. Calculate drift against the current training data.
+    6. If drift < 1%, complete the batch.
+    7. If drift >= 1%, create ONE retraining approval request.
+    8. If retraining is rejected, keep the data version and complete the batch.
+    9. If retraining is approved, train candidate models.
+   10. Wait for the separate model/production approval.
+   11. Whether the model is approved or rejected, complete this batch.
+   12. Only then allow the Scheduler to move to the next CSV.
     """
 
     print("\n" + "=" * 60)
@@ -525,453 +920,535 @@ def process_incoming_file(incoming_file):
     print("=" * 60)
 
     print(
-        f"\nIncoming file: "
-        f"{incoming_file.name}"
+        f"\nIncoming file: {incoming_file.name}"
     )
 
     # --------------------------------------------------------
     # Wait for the incoming CSV to finish copying.
     # --------------------------------------------------------
 
-    if not wait_for_stable_file(
-        incoming_file
-    ):
-
+    if not wait_for_stable_file(incoming_file):
+        print("\nFile is not ready.")
         print(
-            "\nFile is not ready."
+            "This file will be checked again during the next Scheduler run."
         )
-
-        print(
-            "This file will be checked again "
-            "during a future Scheduler run."
-        )
-
         return
 
     # --------------------------------------------------------
-    # Make sure the Scheduler training dataset exists.
+    # Check whether this batch already has a persistent workflow.
+    # --------------------------------------------------------
+
+    workflow_state = load_scheduler_workflow_state()
+
+    if workflow_state is not None:
+
+        active_file = workflow_state.get("incoming_file")
+
+        if active_file != incoming_file.name:
+            print(
+                "\nAnother Scheduler batch is currently active."
+            )
+            print(
+                f"Active batch: {active_file}"
+            )
+            print(
+                "The Scheduler will wait before processing another batch."
+            )
+            return
+
+        return resume_scheduler_workflow(
+            incoming_file,
+            workflow_state,
+        )
+
+    # --------------------------------------------------------
+    # New batch: verify the Scheduler training dataset exists.
     # --------------------------------------------------------
 
     if not TRAINING_DATA_PATH.exists():
-
-        print(
-            "\nERROR: Scheduler training dataset not found."
-        )
-
-        print(
-            f"\nExpected file:"
-        )
-
-        print(
-            f"  {TRAINING_DATA_PATH}"
-        )
-
-        print(
-            "\nRun split_and_combine.py first."
-        )
-
-        print(
-            "The Scheduler does not create the "
-            "initial training dataset."
-        )
-
+        print("\nERROR: Scheduler training dataset not found.")
+        print(f"\nExpected file:\n  {TRAINING_DATA_PATH}")
+        print("\nRun split_and_combine.py first.")
         return
 
-    # --------------------------------------------------------
-    # Load the current training data BEFORE adding the
-    # incoming records.
-    #
-    # This dataset is used as the reference for drift.
-    # --------------------------------------------------------
-
-    reference_df = pd.read_csv(
-        TRAINING_DATA_PATH
-    )
+    reference_df = pd.read_csv(TRAINING_DATA_PATH)
 
     print(
-        f"\nCurrent training rows: "
-        f"{len(reference_df)}"
+        f"\nCurrent training rows: {len(reference_df)}"
     )
 
     # ========================================================
-    # STEP 1 — UPDATE TRAINING DATA
+    # STEP 1 — CHECK FOR NEW RECORDS
     # ========================================================
 
     print("\n" + "=" * 60)
-    print("UPDATING TRAINING DATASET")
+    print("CHECKING INCOMING DATA")
     print("=" * 60)
 
-    # update_training_data() receives:
-    #
-    #   1. Incoming CSV path
-    #   2. Scheduler training dataset path
-    #
-    # The Scheduler training dataset was already
-    # created by split_and_combine.py.
+    try:
+        incoming_df = pd.read_csv(incoming_file)
 
-    update_result = update_training_data(
-        str(
-            incoming_file.relative_to(
-                PROJECT_ROOT
+        if list(incoming_df.columns) != list(reference_df.columns):
+            print(
+                "\nERROR: Incoming CSV schema does not match "
+                "the Scheduler training dataset."
             )
-        ),
-        str(
-            TRAINING_DATA_PATH.relative_to(
-                PROJECT_ROOT
-            )
-        ),
-    )
+            print(f"\nIncoming columns:\n  {list(incoming_df.columns)}")
+            print(f"\nExpected columns:\n  {list(reference_df.columns)}")
+            print("\nThe incoming file will NOT be marked as processed.")
+            return
 
-    new_records = update_result[
-        "new_records"
-    ]
+        if "customer_id" not in incoming_df.columns:
+            print("\nERROR: customer_id column not found.")
+            print(
+                "The Scheduler cannot determine whether records are new."
+            )
+            return
+
+        incoming_unique = incoming_df.drop_duplicates(
+            subset=["customer_id"]
+        )
+
+        existing_ids = set(reference_df["customer_id"])
+
+        new_records = incoming_unique[
+            ~incoming_unique["customer_id"].isin(existing_ids)
+        ]
+
+        new_record_count = len(new_records)
+
+        print(f"\nIncoming rows       : {len(incoming_df)}")
+        print(f"Unique incoming IDs : {len(incoming_unique)}")
+        print(f"New customer records: {new_record_count}")
+
+    except Exception as exc:
+        print(f"\nFailed to inspect incoming CSV: {exc}")
+        print("The incoming file will NOT be marked as processed.")
+        return
+
+    # ========================================================
+    # STEP 2 — NO NEW RECORDS
+    # ========================================================
+
+    if new_record_count == 0:
+        print("\nNo new customer records were found.")
+        print("No new dataset version is required.")
+        finish_current_batch(incoming_file.name)
+        return
+
+    # ========================================================
+    # STEP 3 — ALWAYS PRESERVE / VERSION THE INCOMING DATA
+    # ========================================================
+
+    # IMPORTANT:
+    # Data preservation is independent of human retraining approval.
+    # The incoming records are added to train_scheduler.csv for
+    # lineage/history and immediately versioned with DVC.
+
+    print("\n" + "=" * 60)
+    print("UPDATING SCHEDULER TRAINING DATASET")
+    print("=" * 60)
+
+    try:
+        update_result = update_training_data(
+            str(incoming_file.relative_to(PROJECT_ROOT)),
+            str(TRAINING_DATA_PATH.relative_to(PROJECT_ROOT)),
+        )
+
+    except Exception as exc:
+        print(f"\nTraining dataset update failed: {exc}")
+        print("The incoming file will NOT be marked as processed.")
+        return
 
     print(
         f"\nNew customer records added: "
-        f"{new_records}"
+        f"{update_result['new_records']}"
     )
-
     print(
         f"Updated training dataset rows: "
         f"{update_result['updated_rows']}"
     )
 
-    # --------------------------------------------------------
-    # If there are no new customer records:
-    #
-    # - Do not create a DVC version.
-    # - Do not perform drift detection.
-    # - Mark the file as processed.
-    # --------------------------------------------------------
-
-    if new_records == 0:
-
-        print(
-            "\nNo new customer records were added."
-        )
-
-        print(
-            "Skipping DVC versioning "
-            "and drift detection."
-        )
-
-        mark_file_as_processed(
-            incoming_file.name
-        )
-
-        return
-
-    # ========================================================
-    # STEP 2 — DVC VERSIONING
-    # ========================================================
-
     dvc_success = version_dataset_with_dvc()
 
     if not dvc_success:
-
+        print("\nDVC versioning failed.")
         print(
-            "\nDVC versioning failed."
+            "The batch will remain unprocessed so the dataset version "
+            "can be completed safely."
         )
-
-        print(
-            "The incoming file will NOT be "
-            "marked as processed."
-        )
-
         return
 
+    # Read the version that was just recorded.
+    history = load_dataset_version_history()
+    dataset_version = None
+    if history:
+        dataset_version = history[-1].get("version")
+
     # ========================================================
-    # STEP 3 — DRIFT DETECTION
+    # STEP 4 — DRIFT DETECTION
     # ========================================================
+
+# ========================================================
 
     print("\n" + "=" * 60)
     print("DRIFT DETECTION")
     print("=" * 60)
 
     try:
-
-        # process_incoming_batch() returns the
-        # calculated drift percentage.
-        #
-        # Example:
-        #   0.00
-        #   15.79
-        #   73.68
-
         drift_percentage = process_incoming_batch(
-            incoming_file.relative_to(
-                PROJECT_ROOT
-            ),
+            incoming_file.relative_to(PROJECT_ROOT),
             reference_df,
         )
-
-        # Convert to float in case the monitor
-        # returns a numeric type such as numpy.float64.
-        drift_percentage = float(
-            drift_percentage
-        )
+        drift_percentage = float(drift_percentage)
 
     except Exception as exc:
-
-        print(
-            f"\nDrift detection failed: {exc}"
-        )
-
-        print(
-            "The incoming file will NOT be "
-            "marked as processed."
-        )
-
+        print(f"\nDrift detection failed: {exc}")
+        print("The training dataset was NOT updated.")
+        print("The incoming file will NOT be marked as processed.")
         return
 
-    print(
-        f"\nDetected drift: "
-        f"{drift_percentage:.2f}%"
-    )
+    print(f"\nDetected drift: {drift_percentage:.2f}%")
+
 
     # ========================================================
-    # STEP 4 — APPLY DRIFT POLICY
+    # STEP 5 — DRIFT POLICY
     # ========================================================
 
-    if (
-        drift_percentage
-        < NO_ACTION_DRIFT_THRESHOLD
-    ):
+    if drift_percentage < NO_ACTION_DRIFT_THRESHOLD:
+        print("\nDrift is below 1%.")
+        print("No retraining action is required.")
+        print("The incoming data has still been preserved and versioned.")
 
-        # ----------------------------------------------------
-        # CASE 1:
-        # Drift is below 1%.
-        # ----------------------------------------------------
+        finish_current_batch(incoming_file.name)
 
-        print(
-            "\nDrift is below 1%."
-        )
-
-        print(
-            "No retraining action is required."
-        )
-
-        print(
-            "No human approval is required."
-        )
-
-        mark_file_as_processed(
-            incoming_file.name
-        )
-
+        print("\n" + "=" * 60)
+        print("SCHEDULER PROCESSING COMPLETED")
+        print("=" * 60)
+        print(f"\nProcessed file : {incoming_file.name}")
+        print(f"Training data  : {TRAINING_DATA_PATH}")
+        print(f"New records    : {update_result['new_records']}")
+        print(f"Drift detected : {drift_percentage:.2f}%")
+        print(f"Dataset version: {dataset_version}")
+        print("Retraining     : Not required")
         return
 
-    # --------------------------------------------------------
-    # CASE 2:
-    # Drift is 1% or higher.
-    #
-    # Scheduler always requires human approval
-    # before retraining.
-    #
-    # Unlike the Event Watcher, the Scheduler
-    # does not automatically retrain when drift
-    # becomes severe.
-    # --------------------------------------------------------
-
-    print(
-        "\nDrift is >= 1%."
-    )
-
-    print(
-        "Human approval is required "
-        "before retraining."
-    )
-
     # ========================================================
-    # STEP 5 — RETRAINING APPROVAL
+    # STEP 6 — CREATE RETRAINING APPROVAL
     # ========================================================
 
-    print(
-        "\nChecking retraining approval status..."
-    )
+    print("\nDrift is >= 1%.")
+    print("Human approval is required before retraining.")
 
     training_data_relative = str(
         TRAINING_DATA_PATH.relative_to(PROJECT_ROOT)
     )
 
-    pending_request = get_pending_approval()
+    new_request = create_pending_approval(
+        trigger_source="Scheduler",
+        approval_type="retraining",
+        training_data_path=training_data_relative,
+    )
 
-    # --------------------------------------------------------
-    # Create a retraining approval request if one does not
-    # already exist for this Scheduler workflow.
-    # --------------------------------------------------------
-    if pending_request is None:
-
-        create_pending_approval(
-            trigger_source="Scheduler",
-            approval_type="retraining",
-            training_data_path=training_data_relative,
-        )
-
-        print(
-            "\nRetraining approval is now pending."
-        )
-
-        print(
-            "Use the existing human approval interface to "
-            "approve or reject retraining."
-        )
-
-        print(
-            "The incoming file will remain unprocessed "
-            "until a decision is made."
-        )
-
+    if new_request is None:
+        print("\nUnable to create retraining approval request.")
+        print("The batch will remain unprocessed.")
         return
 
-    # Make sure the existing pending request belongs to
-    # this Scheduler retraining workflow.
-    if (
-        pending_request.get("approval_type") != "retraining"
-        or pending_request.get("trigger_source") != "Scheduler"
-        or pending_request.get("training_data_path")
-        != training_data_relative
-    ):
+    request_id = new_request.get("request_id")
 
-        print(
-            "\nA different approval request is already pending."
-        )
+    create_scheduler_workflow_state(
+        incoming_file_name=incoming_file.name,
+        drift_percentage=drift_percentage,
+        dataset_version=dataset_version,
+        retraining_request_id=request_id,
+        stage="retraining_pending",
+    )
 
-        print(
-            "The Scheduler will wait until that request "
-            "is completed."
-        )
+    save_scheduler_approval_state(
+        incoming_file.name,
+        request_id,
+    )
 
-        return
+    print("\nRetraining approval is now pending.")
+    print(
+        "The incoming data has already been preserved in the "
+        "versioned Scheduler dataset."
+    )
+    print(
+        "The Scheduler will stay on this batch until the human decision "
+        "is completed."
+    )
 
-    # --------------------------------------------------------
-    # Human approval is still pending.
-    # --------------------------------------------------------
-    if pending_request.get("status") == "pending":
 
-        print(
-            "\nRetraining approval is still pending."
-        )
+# ============================================================
+# RESUME AN ACTIVE BATCH WORKFLOW
+# ============================================================
 
-        print(
-            "The Scheduler will check again during the "
-            "next scheduled run."
-        )
+def resume_scheduler_workflow(incoming_file, workflow_state):
+    """
+    Continue an already-started batch workflow.
 
-        return
+    This function is what prevents Batch N+1 from starting while
+    Batch N is waiting for a human decision.
+    """
 
-    # --------------------------------------------------------
-    # Human rejected retraining.
-    # --------------------------------------------------------
-    if pending_request.get("decision") == "reject_retraining":
-
-        print(
-            "\nRetraining was rejected by the human reviewer."
-        )
-
-        print(
-            "No candidate models will be trained."
-        )
-
-        mark_file_as_processed(
-            incoming_file.name
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # Human approved retraining.
-    # --------------------------------------------------------
-    if pending_request.get("decision") != "approve_retraining":
-
-        print(
-            "\nApproval request has an unexpected decision."
-        )
-
-        print(
-            "The Scheduler will not start retraining."
-        )
-
-        return
+    stage = workflow_state.get("stage")
+    retraining_request_id = workflow_state.get(
+        "retraining_request_id"
+    )
+    model_request_id = workflow_state.get(
+        "model_approval_request_id"
+    )
 
     print(
-        "\nRetraining approved by the human reviewer."
+        f"\nActive workflow stage: {stage}"
+    )
+    print(
+        "The Scheduler will continue this batch before selecting "
+        "another incoming file."
     )
 
     # ========================================================
-    # STEP 6 — CANDIDATE TRAINING
+    # RETRAINING APPROVAL
     # ========================================================
 
-    print("\n" + "=" * 60)
-    print("STARTING CANDIDATE MODEL TRAINING")
-    print("=" * 60)
+    if stage == "retraining_pending":
 
-    try:
-
-        training_result = run_candidate_training(
-            TRAINING_DATA_PATH,
-            trigger_source="Scheduler",
+        request = get_latest_approval_for_request(
+            retraining_request_id
         )
 
-        print(
-            "\nCandidate training completed."
-        )
-
-        if training_result is not None:
-
+        if request is None:
             print(
-                f"Training result: "
-                f"{training_result}"
+                "\nRetraining approval request could not be found."
+            )
+            print(
+                "The Scheduler will keep this batch active."
+            )
+            return
+
+        decision = request.get("decision")
+        status = request.get("status")
+
+        if status == "pending" or decision is None:
+            print("\nRetraining approval is still pending.")
+            print("No new approval request will be created.")
+            print(
+                "The Scheduler will wait for the human decision."
+            )
+            return
+
+        # ----------------------------------------------------
+        # Retraining rejected.
+        # ----------------------------------------------------
+
+        if decision == "reject_retraining":
+            print("\nRetraining was rejected by the human reviewer.")
+            print("No candidate models will be trained.")
+            print(
+                "The incoming data version is preserved and remains "
+                "in train_scheduler.csv."
             )
 
-    except Exception as exc:
+            finish_current_batch(incoming_file.name)
 
+            print("\nBatch completed.")
+            print("The next incoming batch can now be processed.")
+            return
+
+        # ----------------------------------------------------
+        # Retraining approved.
+        # ----------------------------------------------------
+
+        if decision != "approve_retraining":
+            print(
+                f"\nUnexpected retraining decision: {decision}"
+            )
+            print("The Scheduler will keep the batch active.")
+            return
+
+        print("\nRetraining approved by the human reviewer.")
         print(
-            f"\nCandidate training failed: "
-            f"{exc}"
+            "The preserved/versioned Scheduler dataset will now be "
+            "used for candidate training."
         )
 
-        print(
-            "The incoming file will NOT be "
-            "marked as processed."
+        update_scheduler_workflow_state(
+            stage="candidate_training"
         )
+        stage = "candidate_training"
 
+    # ========================================================
+    # CANDIDATE TRAINING
+    # ========================================================
+
+    if stage == "candidate_training":
+
+        # If a production approval already exists for this batch,
+        # candidate training has already completed. Do not train again.
+        existing_request = load_latest_approval_request()
+
+        if (
+            existing_request is not None
+            and existing_request.get("approval_type") == "production"
+            and existing_request.get("trigger_source") == "Scheduler"
+            and existing_request.get("status") == "pending"
+        ):
+            model_request_id = existing_request.get("request_id")
+
+            update_scheduler_workflow_state(
+                stage="model_approval_pending",
+                model_approval_request_id=model_request_id,
+            )
+
+            print(
+                "\nCandidate training has already created a "
+                "production/model approval request."
+            )
+            print(
+                "The Scheduler will now wait for that human decision."
+            )
+            return
+
+        print("\n" + "=" * 60)
+        print("STARTING CANDIDATE MODEL TRAINING")
+        print("=" * 60)
+
+        try:
+            training_result = run_candidate_training(
+                TRAINING_DATA_PATH,
+                trigger_source="Scheduler",
+                retraining_approved=True,
+            )
+
+        except Exception as exc:
+            print(
+                f"\nCandidate training failed: {exc}"
+            )
+            print(
+                "The batch remains active and will be retried "
+                "during the next Scheduler run."
+            )
+            return
+
+        # candidate_training.py creates a separate production
+        # approval request after successful candidate training.
+        latest_request = load_latest_approval_request()
+
+        if (
+            latest_request is not None
+            and latest_request.get("approval_type") == "production"
+            and latest_request.get("trigger_source") == "Scheduler"
+        ):
+            model_request_id = latest_request.get("request_id")
+
+            update_scheduler_workflow_state(
+                stage="model_approval_pending",
+                model_approval_request_id=model_request_id,
+            )
+
+            print(
+                "\nCandidate training completed."
+            )
+
+            if training_result is not None:
+                print(
+                    f"Training result: {training_result}"
+                )
+
+            print("\nModel/production approval is now pending.")
+            print(
+                "The Scheduler will remain on this batch until "
+                "the human makes the final model decision."
+            )
+            return
+
+        print(
+            "\nCandidate training did not create the expected "
+            "production approval request."
+        )
+        print(
+            "The batch remains active and will be checked again."
+        )
         return
 
     # ========================================================
-    # STEP 7 — COMPLETE
+    # MODEL / PRODUCTION APPROVAL
     # ========================================================
 
-    mark_file_as_processed(
-        incoming_file.name
-    )
+    if stage == "model_approval_pending":
 
-    print("\n" + "=" * 60)
-    print("SCHEDULER PROCESSING COMPLETED")
-    print("=" * 60)
+        request = get_latest_approval_for_request(
+            model_request_id
+        )
+
+        if request is None:
+            print(
+                "\nModel approval request could not be found."
+            )
+            print(
+                "The Scheduler will keep this batch active."
+            )
+            return
+
+        decision = request.get("decision")
+        status = request.get("status")
+
+        if status == "pending" or decision is None:
+            print("\nModel/production approval is still pending.")
+            print("No new model approval request will be created.")
+            print(
+                "The Scheduler will wait and keep this batch active."
+            )
+            return
+
+        print(
+            f"\nFinal model approval decision received: {decision}"
+        )
+
+        if decision == "reject_all":
+            print("The candidate models were rejected.")
+            print(
+                "The dataset version remains preserved for lineage "
+                "and future analysis."
+            )
+        else:
+            print(
+                "A candidate model was approved for production."
+            )
+            print(
+                "The dataset version remains preserved as part of "
+                "the batch lineage."
+            )
+
+        # IMPORTANT:
+        # Whether the model is approved OR rejected, the batch is
+        # now complete. Only after this point can the next incoming
+        # CSV be selected.
+        finish_current_batch(incoming_file.name)
+
+        print("\n" + "=" * 60)
+        print("SCHEDULER BATCH COMPLETED")
+        print("=" * 60)
+        print(f"\nProcessed file : {incoming_file.name}")
+        print(
+            f"Dataset version: "
+            f"{workflow_state.get('dataset_version')}"
+        )
+        print(
+            f"Drift detected : "
+            f"{workflow_state.get('drift_percentage', 0):.2f}%"
+        )
+        print("The Scheduler can now move to the next batch.")
+        return
 
     print(
-        f"\nProcessed file : "
-        f"{incoming_file.name}"
+        f"\nUnknown Scheduler workflow stage: {stage}"
     )
-
     print(
-        f"Training data  : "
-        f"{TRAINING_DATA_PATH}"
-    )
-
-    print(
-        f"New records    : "
-        f"{new_records}"
-    )
-
-    print(
-        f"Drift detected : "
-        f"{drift_percentage:.2f}%"
-    )
-
-    print(
-        "Retraining     : Approved and completed"
+        "The Scheduler will not select another batch until the "
+        "workflow state is resolved."
     )
 
 
@@ -983,41 +1460,80 @@ def run_scheduler_job():
     """
     Execute one Scheduler cycle.
 
-    Only one unprocessed CSV file is handled
-    during each scheduled run.
+    The Scheduler processes batches sequentially. If a batch is
+    already active and waiting for a human decision, that same
+    batch is resumed instead of selecting a new CSV.
     """
 
     print("\n\n" + "#" * 60)
-
+    print("SCHEDULER RUN")
     print(
-        "SCHEDULER RUN"
+        time.strftime("%Y-%m-%d %H:%M:%S")
     )
-
-    print(
-        time.strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-    )
-
     print("#" * 60)
 
-    # Find the next unprocessed incoming CSV.
-    incoming_file = find_next_incoming_file()
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Always resume an active workflow first.
+    #
+    # This is the sequencing gate that prevents:
+    # Batch 1 -> pending model approval -> Batch 2
+    #
+    # Instead:
+    # Batch 1 -> pending model approval -> wait -> final decision
+    # -> complete Batch 1 -> Batch 2
+    # --------------------------------------------------------
 
-    if incoming_file is None:
+    active_workflow = load_scheduler_workflow_state()
+
+    if active_workflow is not None:
+        active_file_name = active_workflow.get(
+            "incoming_file"
+        )
+
+        active_file = (
+            INCOMING_DIR / active_file_name
+        )
+
+        if not active_file.exists():
+            print(
+                "\nERROR: Active Scheduler batch file is missing."
+            )
+            print(
+                f"Expected file: {active_file}"
+            )
+            print(
+                "The Scheduler will not move to another batch "
+                "while this workflow state exists."
+            )
+            return
 
         print(
-            "\nNo new incoming CSV files found."
+            f"\nActive batch resumed: {active_file_name}"
+        )
+
+        process_incoming_file(
+            active_file
         )
 
         return
 
+    # --------------------------------------------------------
+    # No active workflow exists.
+    # Find the next unprocessed CSV.
+    # --------------------------------------------------------
+
+    incoming_file = find_next_incoming_file()
+
+    if incoming_file is None:
+        print("\nNo new incoming CSV files found.")
+        return
+
     print(
-        f"\nNext file selected: "
-        f"{incoming_file.name}"
+        f"\nNext file selected: {incoming_file.name}"
     )
 
-    # Process only one file during this run.
+    # Process only one file during this Scheduler run.
     process_incoming_file(
         incoming_file
     )
@@ -1226,6 +1742,13 @@ if __name__ == "__main__":
 #   - Processed files are recorded in:
 #
 #       logs/scheduler_processed_files.json
+#
+#   - Scheduler approval-to-file state is recorded in:
+#
+#       logs/scheduler_approval_state.json
+#
+#     This allows the Scheduler to recognize the same approval
+#     after the dashboard approves or rejects the request.
 #
 #   - Dataset version history is recorded in:
 #

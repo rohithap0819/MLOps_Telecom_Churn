@@ -120,6 +120,16 @@ class ApprovalRequest(BaseModel):
     2. Production model approval
     """
 
+    # Unique ID of the approval request currently shown
+    # in the dashboard.
+    #
+    # This is important because multiple approval requests
+    # can exist during the retraining workflow.
+    request_id: str = Field(
+        ...,
+        description="Unique ID of the pending approval request."
+    )
+
     # Human decision submitted through the dashboard.
     #
     # The exact accepted values depend on which approval stage
@@ -135,9 +145,6 @@ class ApprovalRequest(BaseModel):
     )
 
     # Name of the person who is making the approval decision.
-    #
-    # This creates a basic audit trail showing who approved
-    # or rejected the workflow.
     reviewer: str = Field(
         ...,
         description="Name of the human reviewer."
@@ -145,9 +152,6 @@ class ApprovalRequest(BaseModel):
 
     # Used when the approval workflow requires explicit
     # confirmation for a candidate model with a lower F1 score.
-    #
-    # False is used by default so the reviewer does not
-    # accidentally confirm the lower-performing model.
     confirm_lower_f1: bool = False
 
 

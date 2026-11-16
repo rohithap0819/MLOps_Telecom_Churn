@@ -1640,100 +1640,6 @@ def render_model_comparison():
         st.divider()
 
 
-        # ========================================================
-        # 4. PRODUCTION MODEL
-        # ========================================================
-
-        st.subheader(
-            "Production Model"
-        )
-
-        st.caption(
-            "The model currently approved and deployed for production predictions."
-        )
-
-        if not production_df.empty:
-
-            production_display_columns = [
-                column
-                for column in [
-                    "model_name",
-                    "mlflow_run_id",
-                    "model_path",
-                    "accuracy",
-                    "precision",
-                    "recall",
-                    "f1_score",
-                    "roc_auc",
-                    "model_version",
-                    "approval_status",
-                    "approved_by"
-                ]
-                if column in production_df.columns
-            ]
-
-            production_display_df = (
-                production_df[
-                    production_display_columns
-                ].copy()
-            )
-
-            production_display_df["stage"] = (
-                "Production"
-            )
-
-            st.dataframe(
-                production_display_df,
-                use_container_width=True,
-                hide_index=True
-            )
-
-            production_row = (
-                production_df.iloc[0]
-            )
-
-            production_metric_columns = [
-                column
-                for column in [
-                    "accuracy",
-                    "precision",
-                    "recall",
-                    "f1_score",
-                    "roc_auc"
-                ]
-                if column in production_df.columns
-            ]
-
-            if production_metric_columns:
-
-                production_metric_cols = st.columns(
-                    len(production_metric_columns)
-                )
-
-                for metric_col, metric_container in zip(
-                    production_metric_columns,
-                    production_metric_cols
-                ):
-
-                    metric_container.metric(
-                        f"Production {metric_col.replace('_', ' ').title()}",
-                        f"{float(production_row[metric_col]):.4f}"
-                    )
-
-            if "model_name" in production_df.columns:
-
-                st.success(
-                    f"Current production model: "
-                    f"{production_row['model_name']}"
-                )
-
-        else:
-
-            st.info(
-                "No production model metrics are available yet."
-            )
-
-
     except requests.exceptions.RequestException as error:
 
         st.error(
@@ -1911,12 +1817,10 @@ def render_human_approval():
                 else:
 
                     approval_payload = {
-                        "decision":
-                            selected_decision,
-                        "reviewer":
-                            reviewer.strip(),
-                        "confirm_lower_f1":
-                            False
+                        "request_id": request_id,
+                        "decision": selected_decision,
+                        "reviewer": reviewer.strip(),
+                        "confirm_lower_f1": False
                     }
 
                     try:
@@ -2222,12 +2126,10 @@ def render_human_approval():
             else:
 
                 approval_payload = {
-                    "decision":
-                        selected_decision,
-                    "reviewer":
-                        reviewer.strip(),
-                    "confirm_lower_f1":
-                        lower_f1_confirmation
+                    "request_id": request_id,
+                    "decision": selected_decision,
+                    "reviewer": reviewer.strip(),
+                    "confirm_lower_f1": lower_f1_confirmation
                 }
 
                 try:

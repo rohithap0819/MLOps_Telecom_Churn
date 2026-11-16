@@ -1,4 +1,3 @@
-
 services:
   telecom-churn:
     build: .

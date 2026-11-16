@@ -519,6 +519,7 @@ def approve_model(request: ApprovalRequest):
             # confirm_lower_f1 allows the workflow to explicitly
             # confirm a decision when the candidate F1 is lower.
             result = make_approval_decision(
+                request_id=request.request_id,
                 decision=request.decision,
                 reviewer=request.reviewer,
                 confirm_lower_f1=request.confirm_lower_f1
@@ -632,6 +633,7 @@ def approve_model(request: ApprovalRequest):
         # and the human can decide which model should become
         # the production model.
         result = make_approval_decision(
+            request_id=request.request_id,
             decision=request.decision,
             reviewer=request.reviewer,
             confirm_lower_f1=request.confirm_lower_f1
