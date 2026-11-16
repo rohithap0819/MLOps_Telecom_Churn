@@ -130,10 +130,20 @@ class ApprovalRequest(BaseModel):
         description="Unique ID of the pending approval request."
     )
 
-    # Human decision submitted through the dashboard.
+        # Human decision submitted through the dashboard.
     #
-    # The exact accepted values depend on which approval stage
-    # is currently active.
+    # This field is stored as a string in the API schema.
+    # The approval workflow determines which decision values
+    # are valid for the current approval stage.
+    #
+    # Retraining approval:
+    #     approve_retraining
+    #     reject_retraining
+    #
+    # Production approval:
+    #     logistic_regression
+    #     decision_tree
+    #     reject_all
     decision: str = Field(
         ...,
         description=(

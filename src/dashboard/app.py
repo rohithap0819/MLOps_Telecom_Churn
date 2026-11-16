@@ -701,9 +701,13 @@ def render_live_monitoring():
     # ========================================================
 
     # IMPORTANT:
-    # This entire Scheduler section is intentionally INSIDE
-    # render_live_monitoring() so it can access PROJECT_ROOT
-    # and HISTORY_PATH defined above.
+    # The Scheduler Workflow is displayed inside
+    # render_live_monitoring() because this section shows the
+    # scheduler's monitoring status, processed batches, drift
+    # results, and human approval activity.
+    #
+    # Keeping this section inside the monitoring function also
+    # allows it to reuse the project paths defined there.
 
     st.divider()
 
