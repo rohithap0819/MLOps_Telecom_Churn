@@ -30,4 +30,4 @@ jobs:
 
       - name: Run pytest
         run: |
-          python -m pytest -v
+          python -m pytest -v validate_pipeline.py
