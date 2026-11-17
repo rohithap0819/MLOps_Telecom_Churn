@@ -21,7 +21,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 
-from model_human_approval import (
+from deployment.model_human_approval import (
     create_pending_approval,
     get_pending_approval
 )
@@ -31,7 +31,7 @@ from model_human_approval import (
 # 1. Project paths and configuration
 # --------------------------------------------------
 
-PROJECT_ROOT = Path(__file__).resolve().parent[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 DATA_PATH = (
     PROJECT_ROOT

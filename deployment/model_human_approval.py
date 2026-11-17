@@ -29,7 +29,7 @@ import pandas as pd
 # 1. Project paths
 # --------------------------------------------------
 
-PROJECT_ROOT = Path(__file__).resolve().parent[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 CANDIDATE_DIR = PROJECT_ROOT / "models" / "candidates"
 PRODUCTION_DIR = PROJECT_ROOT / "models" / "production"

@@ -34,6 +34,7 @@ mlruns/
 logs/*.log
 logs/*.csv
 logs/*.html
+logs/*.json
 
 # Editor and OS
 .vscode/
@@ -44,19 +45,11 @@ Thumbs.db
 *.tmp
 *.bak
 
-# Incoming demonstration batches
-data/incoming/*.csv
-data/incoming_batches/
-data/incoming_batches/*.csv
-
-# Runtime approval history
-logs/approval_requests.json
+# Generated data
+data/data_sources/incoming/
+data/data_sources/incoming_batches/
+data/data_sources/event_watcher_data/
+data/data_sources/scheduler_data/
 
 # Runtime production registry
 models/production_registry.json
-
-# Runtime logs / JSON
-logs/*.json
-
-data/event_watcher_data/*.csv
-data/scheduler_data/*.csv
