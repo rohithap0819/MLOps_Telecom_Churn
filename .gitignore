@@ -48,8 +48,8 @@ Thumbs.db
 # Generated data
 data/data_sources/incoming/
 data/data_sources/incoming_batches/
-data/data_sources/event_watcher_data/
-data/data_sources/scheduler_data/
+data/data_sources/event_watcher_data/*.csv
+data/data_sources/scheduler_data/*.csv
 
 # Runtime production registry
 models/production_registry.json

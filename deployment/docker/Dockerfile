@@ -46,7 +46,7 @@ COPY . .
 
 # Windows may store the shell script with CRLF line endings.
 # Convert CRLF to Unix LF and make the script executable.
-RUN sed -i 's/\r$//' start.sh && chmod +x start.sh
+RUN sed -i 's/\r$//' deployment/docker/start.sh && chmod +x deployment/docker/start.sh
 
 
 # --------------------------------------------------
@@ -83,7 +83,7 @@ EXPOSE 8001
 #   - Event Watcher
 #
 # Scheduler remains commented out in start.sh.
-CMD ["bash", "start.sh"]
+CMD ["bash", "deployment/docker/start.sh"]
 
 
 # --------------------------------------------------

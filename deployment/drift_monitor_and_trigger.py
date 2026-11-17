@@ -20,6 +20,7 @@ Workflow:
 9. This script never directly promotes a model to production.
 """
 
+
 import json
 import sys
 import subprocess
@@ -30,6 +31,12 @@ from threading import Lock
 
 from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from deployment.config import INCOMING_DATA_PATH
 from deployment.monitoring import load_reference_data, process_incoming_batch
