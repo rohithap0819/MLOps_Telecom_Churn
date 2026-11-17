@@ -1,0 +1,1017 @@
+"""
+approval.py
+
+Manages human approval for candidate model retraining and production promotion.
+
+The workflow has two separate human approval stages:
+
+1. RETRAINING APPROVAL
+   - Data drift is detected.
+   - A retraining approval request is created.
+   - Candidate training does not start until a human approves retraining.
+
+2. PRODUCTION APPROVAL
+   - Candidate models are trained.
+   - A new production approval request is created.
+   - A human selects Logistic Regression, Decision Tree, or rejects both.
+   - Only the selected approved candidate is promoted to production.
+"""
+
+import json
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pandas as pd
+
+
+# --------------------------------------------------
+# 1. Project paths
+# --------------------------------------------------
+
+PROJECT_ROOT = Path(__file__).resolve().parent[1]
+
+CANDIDATE_DIR = PROJECT_ROOT / "models" / "candidates"
+PRODUCTION_DIR = PROJECT_ROOT / "models" / "production"
+REGISTRY_PATH = PROJECT_ROOT / "models" / "production_registry.json"
+
+CANDIDATE_METRICS_PATH = PROJECT_ROOT / "logs" / "candidate_metrics.csv"
+PRODUCTION_METRICS_PATH = PROJECT_ROOT / "logs" / "production_metrics.csv"
+
+APPROVAL_LOG_PATH = PROJECT_ROOT / "logs" / "approval_requests.json"
+
+PENDING_APPROVAL_PATH = (
+    PROJECT_ROOT / "logs" / "pending_approval.json"
+)
+
+PRODUCTION_DIR.mkdir(parents=True, exist_ok=True)
+APPROVAL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+# --------------------------------------------------
+# 2. Utility functions
+# --------------------------------------------------
+
+def generate_request_id():
+    """Generate a unique approval request ID."""
+
+    return datetime.now(timezone.utc).strftime(
+        "%Y%m%dT%H%M%S%fZ"
+    )
+
+
+# --------------------------------------------------
+# 3. Load production registry
+# --------------------------------------------------
+
+def load_registry():
+    """Load the current production model registry."""
+
+    if not REGISTRY_PATH.exists():
+        return {"production_model": None}
+
+    with open(REGISTRY_PATH, "r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def save_registry(registry):
+    """Save the production model registry."""
+
+    with open(REGISTRY_PATH, "w", encoding="utf-8") as file:
+        json.dump(registry, file, indent=4)
+
+
+# --------------------------------------------------
+# 4. Pending approval request management
+# --------------------------------------------------
+
+def get_pending_approval():
+    """
+    Return the current pending approval request.
+
+    Only requests with status='pending' are returned.
+    """
+
+    if not PENDING_APPROVAL_PATH.exists():
+        return None
+
+    with open(
+        PENDING_APPROVAL_PATH,
+        "r",
+        encoding="utf-8"
+    ) as file:
+        request = json.load(file)
+
+    if request.get("status") == "pending":
+        return request
+
+    return None
+
+
+def create_pending_approval(
+    trigger_source,
+    approval_type="production",
+    training_data_path=None
+):
+    """
+    Create a new human approval request.
+
+    A request is created only when another approval is not
+    already pending.
+    """
+
+    existing_request = get_pending_approval()
+
+    if existing_request:
+        print("\nA pending approval request already exists.")
+        print(
+            f"Request ID: {existing_request['request_id']}"
+        )
+        return existing_request
+
+    request_id = generate_request_id()
+
+    request = {
+        "request_id": request_id,
+        "trigger_source": trigger_source,
+        "approval_type": approval_type,
+        "training_data_path": training_data_path,
+        "status": "pending",
+        "created_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "decision": None,
+        "reviewer": None,
+        "decision_timestamp": None
+    }
+
+    with open(
+        PENDING_APPROVAL_PATH,
+        "w",
+        encoding="utf-8"
+    ) as file:
+        json.dump(
+            request,
+            file,
+            indent=4
+        )
+
+    print("\nPending human approval request created.")
+    print(f"Approval type: {approval_type}")
+    print(f"Trigger source: {trigger_source}")
+    print(f"Request ID: {request['request_id']}")
+
+    return request
+
+
+def update_pending_approval(
+    request_id,
+    decision,
+    reviewer
+):
+    """
+    Update the specific pending approval request.
+
+    The request_id is checked before updating so that a
+    decision cannot accidentally be applied to another
+    approval request.
+    """
+
+    request = get_pending_approval()
+
+    if request is None:
+        raise ValueError(
+            "No pending approval request found."
+        )
+
+    # Make sure the approval belongs to the request
+    # currently waiting in the workflow.
+    if request.get("request_id") != request_id:
+        raise ValueError(
+            "Approval request ID does not match "
+            "the current pending approval request."
+        )
+
+    # Retraining rejection and production rejection
+    # are both represented as rejected.
+    request["status"] = (
+        "rejected"
+        if decision in [
+            "reject_retraining",
+            "reject_all"
+        ]
+        else "approved"
+    )
+
+    request["decision"] = decision
+    request["reviewer"] = reviewer
+    request["decision_timestamp"] = datetime.now(
+        timezone.utc
+    ).isoformat()
+
+    with open(
+        PENDING_APPROVAL_PATH,
+        "w",
+        encoding="utf-8"
+    ) as file:
+        json.dump(
+            request,
+            file,
+            indent=4
+        )
+
+    return request
+
+
+# --------------------------------------------------
+# 5. Load model metrics
+# --------------------------------------------------
+
+def load_candidate_metrics():
+    """Load metrics generated by retraining.py."""
+
+    if not CANDIDATE_METRICS_PATH.exists():
+        raise FileNotFoundError(
+            "Candidate metrics not found. "
+            "Run retraining.py first."
+        )
+
+    metrics = pd.read_csv(
+        CANDIDATE_METRICS_PATH
+    )
+
+    if metrics.empty:
+        raise ValueError(
+            "No candidate model results found."
+        )
+
+    return metrics
+
+
+def load_production_metrics():
+    """Load metrics for the current production model."""
+
+    if not PRODUCTION_METRICS_PATH.exists():
+        print("\nWarning: Production metrics not found.")
+        return pd.DataFrame()
+
+    return pd.read_csv(
+        PRODUCTION_METRICS_PATH
+    )
+
+
+# --------------------------------------------------
+# 6. Display production and candidate comparison
+# --------------------------------------------------
+
+def display_model_comparison(
+    candidate_metrics,
+    production_metrics
+):
+    """Display candidate and production model metrics."""
+
+    print("\n" + "=" * 75)
+    print("MODEL PERFORMANCE COMPARISON")
+    print("=" * 75)
+
+    display_columns = [
+        "model_name",
+        "accuracy",
+        "precision",
+        "recall",
+        "f1_score",
+        "roc_auc",
+    ]
+
+    if not production_metrics.empty:
+
+        comparison = pd.concat(
+            [
+                production_metrics,
+                candidate_metrics
+            ],
+            ignore_index=True
+        )
+
+    else:
+        comparison = candidate_metrics.copy()
+
+    print(
+        comparison[
+            display_columns
+        ].to_string(index=False)
+    )
+
+    if not production_metrics.empty:
+
+        production_f1 = production_metrics.iloc[0][
+            "f1_score"
+        ]
+
+        print(
+            "\nCandidate performance against production:"
+        )
+
+        for _, row in candidate_metrics.iterrows():
+
+            difference = (
+                row["f1_score"] -
+                production_f1
+            )
+
+            if difference > 0:
+                status = "Better"
+
+            elif difference < 0:
+                status = "Worse"
+
+            else:
+                status = "Equal"
+
+            print(
+                f"{row['model_name']}: "
+                f"{status} "
+                f"(F1 difference: "
+                f"{difference:+.4f})"
+            )
+
+    print(
+        "\nNote: Metrics are evaluated on the "
+        "same test split for this training run."
+    )
+
+
+# --------------------------------------------------
+# 7. Record approval decision
+# --------------------------------------------------
+
+def record_decision(
+    request_id,
+    decision,
+    reviewer,
+    approval_type=None,
+    status=None
+):
+    """
+    Record the human decision using the SAME request ID
+    that was created for the approval workflow.
+
+    The request ID is never regenerated here. This is important
+    because the Scheduler and API use the original request ID
+    to track one approval request from start to finish.
+
+    If the same request is recorded again, the existing history
+    entry is updated instead of creating a duplicate entry.
+    """
+
+    if APPROVAL_LOG_PATH.exists():
+
+        with open(
+            APPROVAL_LOG_PATH,
+            "r",
+            encoding="utf-8"
+        ) as file:
+            approval_history = json.load(file)
+
+    else:
+        approval_history = []
+
+    # Find an existing history entry for this exact request.
+    existing_entry = None
+
+    for entry in approval_history:
+        if entry.get("request_id") == request_id:
+            existing_entry = entry
+            break
+
+    decision_record = {
+        "request_id": request_id,
+        "decision": decision,
+        "reviewer": reviewer,
+        "timestamp": datetime.now(
+            timezone.utc
+        ).isoformat()
+    }
+
+    # Store the approval stage when it is known.
+    # This lets the Scheduler distinguish retraining
+    # approval from production approval.
+    if approval_type is not None:
+        decision_record["approval_type"] = approval_type
+
+    if status is not None:
+        decision_record["status"] = status
+
+    if existing_entry is not None:
+        # Update the same request instead of creating
+        # another request ID or duplicate history entry.
+        existing_entry.update(decision_record)
+        request = existing_entry
+    else:
+        approval_history.append(decision_record)
+        request = decision_record
+
+    with open(
+        APPROVAL_LOG_PATH,
+        "w",
+        encoding="utf-8"
+    ) as file:
+        json.dump(
+            approval_history,
+            file,
+            indent=4
+        )
+
+    return request
+
+
+# --------------------------------------------------
+# 8. Promote approved candidate
+# --------------------------------------------------
+
+def promote_candidate(
+    model_name,
+    reviewer
+):
+    """
+    Promote the selected candidate model to production.
+    """
+
+    candidate_path = (
+        CANDIDATE_DIR /
+        f"{model_name}.joblib"
+    )
+
+    if not candidate_path.exists():
+        raise FileNotFoundError(
+            f"Candidate model not found: "
+            f"{candidate_path}"
+        )
+
+    registry = load_registry()
+
+    production_path = (
+        PRODUCTION_DIR /
+        "production_model.joblib"
+    )
+
+    previous_model = registry.get(
+        "production_model"
+    )
+
+    previous_version = registry.get(
+        "model_version"
+    )
+
+    timestamp = datetime.now(
+        timezone.utc
+    ).strftime(
+        "%Y%m%dT%H%M%S%fZ"
+    )
+
+    # Preserve the existing production model
+    # before replacing it.
+    if production_path.exists():
+
+        backup_path = (
+            PRODUCTION_DIR /
+            f"production_model_backup_{timestamp}.joblib"
+        )
+
+        shutil.copy2(
+            production_path,
+            backup_path
+        )
+
+        print(
+            f"\nPrevious production model backed up: "
+            f"{backup_path}"
+        )
+
+    # Copy candidate to a temporary file first.
+    temporary_path = (
+        PRODUCTION_DIR /
+        "production_model.tmp"
+    )
+
+    shutil.copy2(
+        candidate_path,
+        temporary_path
+    )
+
+    temporary_path.replace(
+        production_path
+    )
+
+    # Update production registry.
+    registry.update({
+        "production_model": model_name,
+        "model_version": timestamp,
+        "approved_by": reviewer,
+        "approval_status": "approved",
+        "approval_timestamp": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "previous_production_model": previous_model,
+        "previous_model_version": previous_version,
+    })
+
+    save_registry(
+        registry
+    )
+
+    print("\n" + "=" * 55)
+    print("PRODUCTION MODEL PROMOTED")
+    print("=" * 55)
+
+    print(
+        f"Approved model : {model_name}"
+    )
+
+    print(
+        f"Approved by    : {reviewer}"
+    )
+
+    print(
+        f"Model location : {production_path}"
+    )
+
+
+# --------------------------------------------------
+# 9. Main approval workflow
+# --------------------------------------------------
+
+def make_approval_decision(
+    request_id,
+    decision,
+    reviewer,
+    confirm_lower_f1=False
+):
+    """
+    Reusable approval workflow for the FastAPI backend
+    and Streamlit dashboard.
+
+    This function supports two separate approval stages:
+
+    1. Retraining approval:
+       - approve_retraining
+       - reject_retraining
+
+    2. Production approval:
+       - logistic_regression
+       - decision_tree
+       - reject_all
+    """
+
+    if not reviewer or not reviewer.strip():
+        raise ValueError(
+            "Reviewer name cannot be empty."
+        )
+
+    # --------------------------------------------------
+    # Get the currently pending request
+    # --------------------------------------------------
+
+    pending_request = get_pending_approval()
+
+    if pending_request is None:
+        raise ValueError(
+            "There is no pending approval request."
+        )
+
+    # --------------------------------------------------
+    # IMPORTANT:
+    # Make sure the request being approved is exactly
+    # the request currently waiting in the workflow.
+    # --------------------------------------------------
+
+    if (
+        pending_request.get("request_id")
+        != request_id
+    ):
+        raise ValueError(
+            "Approval request ID does not match "
+            "the current pending approval request."
+        )
+
+    approval_type = pending_request.get(
+        "approval_type",
+        "production"
+    )
+
+    # --------------------------------------------------
+    # RETRAINING APPROVAL
+    # --------------------------------------------------
+
+    if approval_type == "retraining":
+
+        valid_retraining_decisions = [
+            "approve_retraining",
+            "reject_retraining"
+        ]
+
+        if decision not in valid_retraining_decisions:
+            raise ValueError(
+                "Invalid retraining approval decision."
+            )
+
+        # ----------------------------------------------
+        # Retraining rejected
+        # ----------------------------------------------
+
+        if decision == "reject_retraining":
+
+            update_pending_approval(
+                request_id,
+                decision,
+                reviewer
+            )
+
+            record_decision(
+                request_id,
+                decision,
+                reviewer,
+                approval_type="retraining",
+                status="rejected"
+            )
+
+            return {
+                "status": "retraining_rejected",
+                "message": (
+                    "Retraining rejected. "
+                    "No candidate model will be trained."
+                ),
+                "request_id": request_id
+            }
+
+        # ----------------------------------------------
+        # Retraining approved
+        # ----------------------------------------------
+
+        update_pending_approval(
+            request_id,
+            decision,
+            reviewer
+        )
+
+        record_decision(
+            request_id,
+            decision,
+            reviewer,
+            approval_type="retraining",
+            status="approved"
+        )
+
+        return {
+            "status": "retraining_approved",
+            "message": (
+                "Retraining approved. "
+                "Candidate training can now proceed."
+            ),
+            "request_id": request_id,
+            "training_data_path": (
+                pending_request.get(
+                    "training_data_path"
+                )
+            )
+        }
+
+    # --------------------------------------------------
+    # PRODUCTION APPROVAL
+    # --------------------------------------------------
+
+    valid_production_decisions = [
+        "logistic_regression",
+        "decision_tree",
+        "reject_all"
+    ]
+
+    if decision not in valid_production_decisions:
+        raise ValueError(
+            "Invalid model approval decision."
+        )
+
+    candidate_metrics = (
+        load_candidate_metrics()
+    )
+
+    production_metrics = (
+        load_production_metrics()
+    )
+
+    # --------------------------------------------------
+    # Reject both candidates
+    # --------------------------------------------------
+
+    if decision == "reject_all":
+
+        update_pending_approval(
+            request_id,
+            decision,
+            reviewer
+        )
+
+        record_decision(
+            request_id,
+            decision,
+            reviewer,
+            approval_type="production",
+            status="rejected"
+        )
+
+        return {
+            "status": "rejected",
+            "message": (
+                "Both candidates rejected. "
+                "Production model unchanged."
+            ),
+            "request_id": request_id
+        }
+
+    # --------------------------------------------------
+    # Find selected candidate
+    # --------------------------------------------------
+
+    selected = candidate_metrics[
+        candidate_metrics["model_name"]
+        == decision
+    ]
+
+    if selected.empty:
+        raise ValueError(
+            f"Metrics not found for candidate: "
+            f"{decision}"
+        )
+
+    # --------------------------------------------------
+    # Compare candidate against production
+    # --------------------------------------------------
+
+    if not production_metrics.empty:
+
+        production_f1 = float(
+            production_metrics.iloc[0][
+                "f1_score"
+            ]
+        )
+
+        candidate_f1 = float(
+            selected.iloc[0][
+                "f1_score"
+            ]
+        )
+
+        if (
+            candidate_f1 < production_f1
+            and not confirm_lower_f1
+        ):
+
+            return {
+                "status": "confirmation_required",
+                "message": (
+                    "Candidate has a lower "
+                    "F1-score than the "
+                    "production model."
+                ),
+                "production_f1": production_f1,
+                "candidate_f1": candidate_f1,
+                "request_id": request_id
+            }
+
+    # --------------------------------------------------
+    # Promote and finalize the approved request
+    # --------------------------------------------------
+
+    # Promotion is performed before the approval request is
+    # marked as completed. This prevents the workflow from
+    # recording a successful approval if promotion itself fails.
+    promote_candidate(
+        decision,
+        reviewer
+    )
+
+    update_pending_approval(
+        request_id,
+        decision,
+        reviewer
+    )
+
+    record_decision(
+        request_id,
+        decision,
+        reviewer,
+        approval_type="production",
+        status="approved"
+    )
+
+    return {
+        "status": "approved",
+        "message": (
+            f"{decision} promoted to production successfully."
+        ),
+        "request_id": request_id
+    }
+
+
+# --------------------------------------------------
+# SCRIPT SUMMARY
+# --------------------------------------------------
+
+# This function manages both human approval stages.
+#
+# Retraining approval:
+# - approve_retraining allows candidate training to begin.
+# - reject_retraining stops the retraining workflow.
+#
+# Production approval:
+# - logistic_regression promotes Logistic Regression.
+# - decision_tree promotes Decision Tree.
+# - reject_all rejects both candidates.
+#
+# Important request-ID rule:
+# - Every approval keeps the original request ID.
+# - Streamlit sends that request ID to FastAPI.
+# - FastAPI passes it to this module.
+# - This module validates and updates the same request.
+# - Approval history records the same request ID.
+#
+# This prevents one batch's approval from being
+# accidentally applied to another batch.
+
+
+# --------------------------------------------------
+# 10. Standalone human approval workflow
+# --------------------------------------------------
+
+def main():
+
+    candidate_metrics = (
+        load_candidate_metrics()
+    )
+
+    production_metrics = (
+        load_production_metrics()
+    )
+
+    display_model_comparison(
+        candidate_metrics,
+        production_metrics
+    )
+
+    print("\n" + "=" * 55)
+    print("HUMAN PRODUCTION APPROVAL")
+    print("=" * 55)
+
+    print("1. Approve Logistic Regression")
+    print("2. Approve Decision Tree")
+    print("3. Reject both candidates")
+
+    choice = input(
+        "\nEnter your choice (1/2/3): "
+    ).strip()
+
+    reviewer = input(
+        "Enter reviewer name: "
+    ).strip()
+
+    if not reviewer:
+        print(
+            "Reviewer name cannot be empty. "
+            "No changes made."
+        )
+        return
+
+    choices = {
+        "1": "logistic_regression",
+        "2": "decision_tree",
+        "3": "reject_all",
+    }
+
+    if choice not in choices:
+        print(
+            "Invalid choice. No changes made."
+        )
+        return
+
+    decision = choices[choice]
+
+    # Generate a request ID for the standalone
+    # command-line approval workflow.
+    request_id = generate_request_id()
+
+    # Warn if the selected candidate is worse
+    # than the current production model.
+    if (
+        decision != "reject_all"
+        and not production_metrics.empty
+    ):
+
+        production_f1 = (
+            production_metrics.iloc[0][
+                "f1_score"
+            ]
+        )
+
+        selected = candidate_metrics[
+            candidate_metrics["model_name"]
+            == decision
+        ]
+
+        if selected.empty:
+            print(
+                "Selected candidate metrics not found."
+            )
+            return
+
+        candidate_f1 = (
+            selected.iloc[0][
+                "f1_score"
+            ]
+        )
+
+        if candidate_f1 < production_f1:
+
+            print(
+                "\nWARNING: Selected candidate "
+                "has a lower F1-score than "
+                "the existing production model."
+            )
+
+            print(
+                f"Production F1: "
+                f"{production_f1:.4f}"
+            )
+
+            print(
+                f"Candidate F1 : "
+                f"{candidate_f1:.4f}"
+            )
+
+            confirmation = input(
+                "Do you still want to approve "
+                "this candidate? (yes/no): "
+            ).strip().lower()
+
+            if confirmation != "yes":
+
+                print(
+                    "\nPromotion cancelled. "
+                    "Production model unchanged."
+                )
+
+                return
+
+    record = record_decision(
+        request_id,
+        decision,
+        reviewer
+    )
+
+    if decision == "reject_all":
+
+        print(
+            "\nBoth candidates were rejected."
+        )
+
+        print(
+            "The existing production model "
+            "remains unchanged."
+        )
+
+        registry = load_registry()
+
+        if registry.get(
+            "production_model"
+        ) is not None:
+
+            print(
+                f"Current production model: "
+                f"{registry['production_model']}"
+            )
+
+        else:
+            print(
+                "No production model has "
+                "been approved yet."
+            )
+
+        print(
+            f"Decision recorded. "
+            f"Request ID: {record['request_id']}"
+        )
+
+        return
+
+    promote_candidate(
+        decision,
+        reviewer
+    )
+
+    print(
+        f"\nDecision recorded. "
+        f"Request ID: {record['request_id']}"
+    )
+
+
+if __name__ == "__main__":
+    main()
