@@ -1,6 +1,0 @@
-outs:
-- md5: d792143030b037dca111bd58ab54c081
-  size: 899196
-  hash: md5
-  path: train_trigger.csv
-  isexec: true
