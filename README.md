@@ -1,6 +1,6 @@
 # MLOps Telecom Churn Prediction
 
-An educational end-to-end MLOps project for predicting telecom customer churn and demonstrating model training, model selection, monitoring, data ingestion, retraining, human approval, API deployment, testing, and Docker.
+An educational end-to-end MLOps project for predicting telecom customer churn and demonstrating model training, model selection, monitoring, data ingestion, drift detection, retraining, human approval, API deployment, testing, CI, DVC dataset versioning, and Docker.
 
 > **Note:** This project is designed for learning and classroom demonstrations. It is not intended for production use.
 
@@ -14,36 +14,63 @@ Instead of only training an ML model, the project demonstrates an MLOps lifecycl
 
 ```text
 Training Data
-      |
-      v
+    |
+    v
 Data Validation
-      |
-      v
-Model Training
-      |
-      v
+    |
+    v
+Baseline Model Training
+    |
+    v
 Model Selection
-      |
-      v
+    |
+    v
+MLflow Tracking
+    |
+    v
 Monitoring
-      |
-      v
-New Incoming Data
-      |
-      v
-Drift Detection
-      |
-      v
-Retraining Decision
-      |
-      v
-Human Approval
-      |
-      v
-Candidate Model
-      |
-      v
-Production Approval
+    |
+    v
+Incoming New Data
+    |
+    +------------------------+
+    |                        |
+    v                        v
+Event Watcher            Scheduler
+    |                        |
+    +-----------+------------+
+                |
+                v
+        Data Validation
+                |
+                v
+        Update Training Data
+                |
+                v
+         DVC Versioning
+                |
+                v
+         Drift Detection
+                |
+                v
+         Policy Decision
+                |
+        +-------+-------+
+        |               |
+        v               v
+     No Action       Retraining
+                        |
+                        v
+                Human Approval
+                        |
+                        v
+                Candidate Model
+                        |
+                        v
+                Model Approval
+                        |
+                        v
+                Production Model
 ```
 
 ---
@@ -53,19 +80,21 @@ Production Approval
 - Data validation using Pandera
 - Logistic Regression and Decision Tree
 - Model comparison and selection
-- Cross-validation
+- Stratified cross-validation
 - MLflow experiment tracking
 - Data drift monitoring using Evidently
 - DVC-based dataset versioning
 - Event-driven data processing
 - Scheduled data processing
 - Candidate model retraining
-- Human approval
+- Human approval for retraining
+- Human approval for candidate models
 - FastAPI backend
 - Streamlit dashboard
 - Pytest
 - GitHub Actions
 - Docker
+- Reproducible classroom demonstrations
 
 ---
 
@@ -73,50 +102,93 @@ Production Approval
 
 ```text
 MLOps_Telecom_Churn/
+├── src/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── fastapi_schema.py
+│   └── streamlit_app.py
 │
-├── .github/
-│   └── workflows/
+├── validate_pipeline.py
 │
 ├── data/
-│   ├── train.csv
-│   └── incoming/
+│   ├── validation.py
+│   └── data_sources/
+│       ├── train.csv
+│       ├── current.csv
+│       ├── current_stress.csv
+│       ├── telco_churn_full.csv
+│       ├── event_watcher_data/
+│       │   ├── train_trigger.csv
+│       │   └── train_trigger.csv.dvc
+│       ├── scheduler_data/
+│       │   ├── train_scheduler.csv
+│       │   └── train_scheduler.csv.dvc
+│       ├── incoming/
+│       └── incoming_batches/
+│
+├── modelling/
+│   ├── train.py
+│   └── model_selection.py
+│
+├── deployment/
+│   ├── monitoring.py
+│   ├── drift_monitor_and_trigger.py
+│   ├── scheduler.py
+│   ├── data_simulator_source.py
+│   ├── data_simulator_stream.py
+│   ├── data_simulator_version.py
+│   ├── model_human_approval.py
+│   ├── retraining.py
+│   ├── config.py
+│   └── docker/
+│       ├── Dockerfile
+│       ├── docker-compose.yml
+│       ├── start.sh
+│       └── .dockerignore
 │
 ├── models/
-│   ├── candidates/
-│   └── production/
-│
 ├── logs/
-│
-├── src/
-│   ├── api/
-│   │   ├── main.py
-│   │   └── schemas.py
-│   │
-│   ├── dashboard/
-│   │   └── app.py
-│   │
-│   └── data/
-│       └── validate.py
-│
-├── tests/
-│
-├── approval.py
-├── baseline.py
-├── candidate_training.py
-├── config.py
-├── event_watcher.py
-├── main.py
-├── model_selection.py
-├── monitor.py
-├── scheduler.py
-├── simulate_incoming.py
-├── split_stress_data.py
-├── update_training_data.py
-├── Dockerfile
-├── docker-compose.yml
+├── .dvc/
+├── mlruns/
 ├── requirements.txt
 ├── README.md
-└── .gitignore
+├── .gitignore
+├── .dvcignore
+└── .github/
+    └── workflows/
+        └── ci.yml
+```
+
+### Important data locations
+
+All project CSV files used by the workflows are under:
+
+```text
+data/data_sources/
+```
+
+The Event Watcher uses:
+
+```text
+data/data_sources/event_watcher_data/train_trigger.csv
+```
+
+The Scheduler uses:
+
+```text
+data/data_sources/scheduler_data/train_scheduler.csv
+```
+
+Incoming files are generated under:
+
+```text
+data/data_sources/incoming/
+```
+
+Generated incoming batches are stored under:
+
+```text
+data/data_sources/incoming_batches/
 ```
 
 ---
@@ -125,21 +197,22 @@ MLOps_Telecom_Churn/
 
 | File | Purpose |
 |---|---|
-| `baseline.py` | Trains the initial Logistic Regression and Decision Tree models |
-| `model_selection.py` | Compares models using cross-validation and selects the best model |
-| `main.py` | Runs monitoring using the selected model |
-| `candidate_training.py` | Trains candidate models when retraining is required |
-| `approval.py` | Handles human approval and rejection workflow |
-| `event_watcher.py` | Detects incoming CSV files and starts the event-driven workflow |
-| `scheduler.py` | Checks for incoming data at scheduled intervals |
-| `simulate_incoming.py` | Simulates incoming data for the Event Watcher demo |
-| `update_training_data.py` | Updates the training dataset with incoming customer records |
-| `monitor.py` | Supports monitoring-related operations |
-| `config.py` | Stores project configuration |
-| `src/data/validate.py` | Validates datasets using Pandera |
-| `src/api/main.py` | FastAPI backend |
-| `src/api/schemas.py` | API request/response schemas |
-| `src/dashboard/app.py` | Streamlit approval dashboard |
+| `modelling/train.py` | Trains the baseline model used by the project |
+| `modelling/model_selection.py` | Compares candidate models using cross-validation and selects the preferred model |
+| `deployment/monitoring.py` | Supports monitoring-related operations |
+| `deployment/drift_monitor_and_trigger.py` | Implements the Event Watcher workflow, including incoming-data processing, drift detection, policy decisions, and retraining workflow |
+| `deployment/scheduler.py` | Checks for incoming data on a scheduled interval and runs the Scheduler workflow |
+| `deployment/data_simulator_source.py` | Prepares the datasets required for the Event Watcher and Scheduler demonstrations |
+| `deployment/data_simulator_stream.py` | Generates incoming data for the demonstrations |
+| `deployment/data_simulator_version.py` | Supports the data-versioning demonstration |
+| `deployment/model_human_approval.py` | Handles human approval decisions |
+| `deployment/retraining.py` | Handles candidate model retraining |
+| `deployment/config.py` | Stores project configuration |
+| `data/validation.py` | Validates datasets |
+| `src/main.py` | FastAPI backend and monitoring-related API endpoints |
+| `src/fastapi_schema.py` | FastAPI request/response schemas |
+| `src/streamlit_app.py` | Streamlit dashboard for monitoring and approval workflow |
+| `validate_pipeline.py` | Pytest validation checks for the project |
 
 ---
 
@@ -150,32 +223,26 @@ The project uses two classification models:
 - Logistic Regression
 - Decision Tree
 
-The original V0 dataset contains:
+The original V0 training dataset contains:
 
 ```text
 Rows    : 5300
 Columns : 21
-Churn   : approximately 23.4%
 ```
 
-The baseline evaluation is followed by 5-fold Stratified Cross-Validation for model selection.
+The baseline training and model-selection workflow is designed to establish the initial model used by the rest of the MLOps demonstration.
 
 ### Model Selection
 
-The main selection metric is:
+The project uses cross-validation for model comparison.
+
+The primary model-selection metric is:
 
 ```text
 F1 Score
 ```
 
-Observed V0 cross-validation results:
-
-| Model | F1 | Precision | Recall | ROC-AUC |
-|---|---:|---:|---:|---:|
-| Logistic Regression | 0.599 | 0.480 | 0.797 | 0.854 |
-| Decision Tree | 0.584 | 0.457 | 0.809 | 0.832 |
-
-Therefore, Logistic Regression is selected as the preferred model for the V0 workflow.
+The model-selection workflow evaluates the candidate models and stores the metrics used by the Streamlit dashboard.
 
 ---
 
@@ -192,6 +259,7 @@ Answers:
 ```text
 Logistic Regression
         |
+        v
 Decision Tree
         |
         v
@@ -201,7 +269,7 @@ Model Comparison
 Best Model Selected
 ```
 
-### `main.py`
+### `src/main.py`
 
 Answers:
 
@@ -220,6 +288,10 @@ Predictions
 Metrics + Drift Monitoring
 ```
 
+Model selection chooses the model.
+
+Monitoring evaluates the selected model and current data during the MLOps workflow.
+
 ---
 
 ## 7. MLflow
@@ -228,55 +300,49 @@ MLflow is used for experiment tracking.
 
 It records model parameters, metrics, and experiment runs.
 
-Start MLflow with:
+Start the MLflow UI with:
 
-```bash
-python -m mlflow ui --backend-store-uri ./mlruns
+```cmd
+mlflow ui --host 127.0.0.1 --port 5000
 ```
 
 Open:
 
 ```text
-http://127.0.0.1:5000
+http://localhost:5000
 ```
+
+Keep the MLflow terminal running while viewing the UI.
 
 ---
 
 ## 8. Monitoring
 
-`main.py` runs the monitoring workflow using the selected model.
+The project includes monitoring for the selected model and current data.
 
-It:
+The monitoring workflow can:
 
-1. Loads the selected model.
-2. Loads reference and current data.
-3. Validates the data.
-4. Generates predictions.
-5. Calculates metrics.
-6. Logs metrics to MLflow.
-7. Generates an Evidently drift report.
+1. Load the selected model.
+2. Load reference and current data.
+3. Validate the data.
+4. Generate predictions.
+5. Calculate metrics.
+6. Log metrics to MLflow.
+7. Generate an Evidently drift report.
 
-Example monitoring metrics from a project run:
-
-```text
-Accuracy  : 0.7519
-Precision : 0.4814
-Recall    : 0.8227
-F1 Score  : 0.6074
-ROC-AUC   : 0.8465
-```
+Monitoring results are also surfaced through the project dashboard and logs.
 
 ---
 
 ## 9. Data Drift
 
-Evidently compares reference data with current data to identify changes in feature distributions.
+Evidently is used to compare reference data with current/incoming data and identify changes in feature distributions.
 
 ```text
 Reference Data
       |
       v
-Current Data
+Current / Incoming Data
       |
       v
 Drift Detection
@@ -293,17 +359,27 @@ Data Drift != Model Performance Degradation
 
 Drift indicates that the input data distribution has changed. Actual model performance requires labelled outcomes.
 
+The Scheduler and Event Watcher use their configured drift policies to decide whether retraining action is required.
+
 ---
 
 ## 10. Event Watcher
 
-`event_watcher.py` implements the event-driven workflow.
+The Event Watcher implements the event-driven workflow.
+
+The main script is:
+
+```text
+deployment/drift_monitor_and_trigger.py
+```
+
+Its workflow is:
 
 ```text
 Incoming CSV
       |
       v
-Event Detected
+Event Watcher Detects Data
       |
       v
 Data Validation
@@ -312,56 +388,153 @@ Data Validation
 Update Training Data
       |
       v
-DVC
+DVC Versioning
       |
       v
 Drift Detection
       |
       v
 Policy Decision
+      |
+      v
+Human Approval / Retraining Workflow
 ```
 
-### Run Event Watcher
+### Start the Event Watcher
 
-```bash
-python event_watcher.py
+Open a new VS Code terminal and run:
+
+```cmd
+python deployment\drift_monitor_and_trigger.py
 ```
 
-For the classroom demonstration, the incoming data can be generated using:
+Keep this terminal running.
 
-```bash
-python simulate_incoming.py
+### Start the Event Watcher data simulator
+
+Open another VS Code terminal and run:
+
+```cmd
+python deployment\data_simulator_stream.py
 ```
 
-The simulator creates incoming CSV data which the Event Watcher detects.
+The simulator generates incoming data for the Event Watcher.
+
+Observe:
+
+- Event Watcher terminal
+- Streamlit dashboard
+- Generated logs
+- Drift reports
+- Human approval workflow
+
+### Event Watcher workflow
+
+```text
+Incoming data
+    |
+    v
+Event Watcher detects the data
+    |
+    v
+Data processing
+    |
+    v
+Drift detection
+    |
+    v
+Retraining condition
+    |
+    v
+Human approval
+    |
+    v
+Candidate model training
+    |
+    v
+Model evaluation / approval
+    |
+    v
+Monitoring
+```
 
 ---
 
 ## 11. Scheduler
 
-`scheduler.py` implements scheduled data processing.
+The Scheduler implements scheduled data processing.
 
-For the classroom demonstration, the Scheduler checks for incoming data approximately every **1 minute**.
-
-### Run Scheduler
-
-```bash
-python scheduler.py
-```
-
-Then manually place a CSV file inside:
+The main script is:
 
 ```text
-data/incoming/
+deployment/scheduler.py
 ```
 
-Example:
+For the classroom demonstration, the Scheduler runs on a configured **1-minute cycle**.
+
+### Start the Scheduler
+
+Open a new VS Code terminal and run:
+
+```cmd
+python deployment\scheduler.py
+```
+
+Keep this terminal running.
+
+### Start the Scheduler data simulator
+
+Open another VS Code terminal and run:
+
+```cmd
+python deployment\data_simulator_stream.py
+```
+
+Observe the Scheduler terminal and Streamlit dashboard.
+
+### Important: Wait for the Scheduler cycle
+
+The Scheduler runs on a 1-minute cycle.
+
+After each approval/retraining action, **wait for the next Scheduler cycle** before expecting the next stage.
+
+Do not immediately assume that the workflow is stuck if the next action does not appear.
+
+Typical approval flow:
 
 ```text
-data/incoming/batch_1.csv
+Approve Retraining
+        |
+        v
+WAIT ~1 MINUTE
+        |
+        v
+Candidate Model Training / Model Approval
+        |
+        v
+Approve Model
+        |
+        v
+WAIT ~1 MINUTE
+        |
+        v
+Next Drift Check
+        |
+        v
+Approve Retraining
+        |
+        v
+WAIT ~1 MINUTE
+        |
+        v
+Model Approval
+        |
+        v
+WAIT ~1 MINUTE
+        |
+        v
+Next Scheduler Cycle
 ```
-
-The Scheduler detects and processes the file during its next check.
 
 ---
 
@@ -369,76 +542,67 @@ The Scheduler detects and processes the file during its next check.
 
 | Feature | Event Watcher | Scheduler |
 |---|---|---|
-| Trigger | File event | Scheduled check |
-| Demo input | Simulator | Manually placed CSV |
-| Simulator required | Yes | No |
+| Trigger | Incoming file event | Scheduled check |
+| Main script | `deployment/drift_monitor_and_trigger.py` | `deployment/scheduler.py` |
+| Demo data | Data simulator | Data simulator |
+| Processing | Event-driven | Scheduled |
 | Data validation | Yes | Yes |
 | Data update | Yes | Yes |
+| DVC versioning | Yes | Yes |
 | Drift check | Yes | Yes |
 | Retraining policy | Yes | Yes |
+| Human approval | Yes | Yes |
 
-**Do not run the Event Watcher and Scheduler simultaneously during the demonstration.**
+### Important
 
-### Event Watcher Demo
+**Do not run the Event Watcher and Scheduler simultaneously during the same classroom demonstration.**
 
-```bash
-python event_watcher.py
-```
-
-and:
-
-```bash
-python simulate_incoming.py
-```
-
-### Scheduler Demo
-
-```bash
-python scheduler.py
-```
-
-Then manually place the CSV in:
-
-```text
-data/incoming/
-```
+Complete one workflow, clean its generated incoming state, and then start the other workflow.
 
 ---
 
 ## 13. Retraining Policy
 
+The Event Watcher and Scheduler demonstrate human-in-the-loop retraining decisions.
+
 ### Event Watcher
 
+The Event Watcher uses the configured drift policy to determine whether a retraining action is required.
+
+Conceptually:
+
 ```text
-Drift < 1%
-    |
-    v
-No Action
-
-1% - 50%
-    |
-    v
-Human Retraining Approval
-
-> 50%
-    |
-    v
-Automatic Candidate Retraining
+Drift detected
+      |
+      v
+Policy Decision
+      |
+      +-------------------+
+      |                   |
+      v                   v
+No Retraining        Retraining Required
+                          |
+                          v
+                  Human Approval
 ```
 
 ### Scheduler
 
-```text
-Drift < 1%
-    |
-    v
-No Action
+The Scheduler uses its configured policy for drift-triggered retraining.
 
-Drift >= 1%
-    |
-    v
+```text
+Drift < configured threshold
+          |
+          v
+      No Action
+
+Drift >= configured threshold
+          |
+          v
 Human Retraining Approval
 ```
+
+The project deliberately demonstrates human approval before the retraining workflow continues.
 
 ---
 
@@ -455,7 +619,7 @@ Retraining
 Candidate Model
     |
     v
-Production Approval
+Human / Production Approval
     |
     v
 Production Model
@@ -465,32 +629,49 @@ This demonstrates human-in-the-loop model governance.
 
 ---
 
-## 15. FastAPI
+## 15. Human Approval
 
-FastAPI provides the backend API used by the project.
+Human approval is surfaced through the Streamlit dashboard.
 
-Start FastAPI:
+The workflow can require approval for:
 
-```bash
-uvicorn src.api.main:app --host 127.0.0.1 --port 8001
-```
+- Retraining
+- Candidate model / production promotion
 
-Swagger documentation:
+A rejection does not automatically remove the dataset version or lineage created during the workflow.
 
-```text
-http://127.0.0.1:8001/docs
-```
+The dashboard is used to observe and interact with the approval state.
 
 ---
 
-## 16. Streamlit
+## 16. FastAPI
 
-Streamlit provides the user interface for the human approval workflow.
+FastAPI provides the backend API used by the project.
 
-Start Streamlit:
+Start FastAPI from the project root:
 
-```bash
-python -m streamlit run src/dashboard/app.py
+```cmd
+uvicorn src.main:app --reload
+```
+
+Open the Swagger documentation:
+
+```text
+http://localhost:8001/docs
+```
+
+The API is also used by the Streamlit application where applicable.
+
+---
+
+## 17. Streamlit
+
+Streamlit provides the user interface for the MLOps workflow.
+
+Start Streamlit from the project root:
+
+```cmd
+streamlit run src/streamlit_app.py
 ```
 
 Open:
@@ -499,46 +680,52 @@ Open:
 http://localhost:8501
 ```
 
-For the human approval demonstration, both FastAPI and Streamlit should be running.
+The dashboard can surface:
 
-```text
-User
- |
- v
-Streamlit
- |
- v
-FastAPI
- |
- v
-Approval / Model Workflow
-```
+- Model-selection metrics
+- Monitoring information
+- Drift information
+- Retraining approval requests
+- Candidate model approval information
+- Workflow state
+
+For the human approval demonstration, FastAPI and Streamlit should be running.
 
 ---
 
-## 17. Testing
+## 18. Testing
 
-The project uses Pytest.
+The project uses Pytest for validation.
 
 Run:
 
-```bash
-python -m pytest -v
+```cmd
+python -m pytest -v validate_pipeline.py
 ```
 
-Tests are located in:
+Expected result:
 
 ```text
-tests/
+4 passed
 ```
+
+The validation checks are defined in:
+
+```text
+validate_pipeline.py
+```
+
+GitHub Actions also runs the validation tests.
 
 ---
 
-## 18. GitHub Actions
+## 19. GitHub Actions
 
 GitHub Actions is used for Continuous Integration.
 
 The workflow runs automated checks such as tests when changes are pushed to the repository.
+
+Conceptually:
 
 ```text
 git push
@@ -558,17 +745,27 @@ Pass / Fail
 
 ---
 
-## 19. Docker
+## 20. Docker
 
-The project includes Docker configuration for running the application services.
+Docker is included as a **containerization demonstration**.
 
-Build and start the services with:
+Docker starts:
 
-```bash
-docker compose up --build
+- FastAPI
+- Streamlit
+- Event Watcher
+
+The Scheduler is intentionally **NOT** started by Docker.
+
+### Start Docker
+
+From the project root:
+
+```cmd
+docker compose -f deployment\docker\docker-compose.yml up --build
 ```
 
-Typical services:
+Docker exposes:
 
 ```text
 Streamlit
@@ -581,164 +778,616 @@ FastAPI Swagger
 http://localhost:8001/docs
 ```
 
----
-
-# 20. Setup from ZIP
-
-## Step 1: Extract the Project
-
-Extract the ZIP to a convenient location.
-
-Example:
+### Docker architecture
 
 ```text
-C:\Users\<username>\Desktop\MLOps_Telecom_Churn
+Docker
+   |
+   +----------------------+
+   |          |           |
+   v          v           v
+FastAPI   Streamlit   Event Watcher
+   |          |           |
+   +----------+-----------+
+              |
+              v
+       Shared Project Data
 ```
 
-## Step 2: Open Terminal
+The Docker setup is intended to demonstrate how the application services can be containerized together. It is not presented as a production/cloud deployment architecture.
 
-```bash
-cd C:\Users\<username>\Desktop\MLOps_Telecom_Churn
+### Run the simulator with Docker
+
+Keep Docker running.
+
+Open another VS Code terminal at the project root:
+
+```cmd
+python deployment\data_simulator_stream.py
 ```
 
-## Step 3: Check Python
+The simulator generates incoming data while the Event Watcher running inside Docker processes it.
 
-Python 3.12 is recommended.
+Observe:
 
-```bash
-python --version
+- Docker terminal
+- Event Watcher processing
+- Streamlit dashboard
+- FastAPI, where applicable
+
+### Stop Docker
+
+When the Docker workflow is complete:
+
+```cmd
+docker compose -f deployment\docker\docker-compose.yml down
 ```
 
-## Step 4: Create Virtual Environment
+---
 
-```bash
+# 21. Complete Setup and Execution Flow
+
+This section provides the recommended learner workflow from a fresh ZIP extraction.
+
+## Step 1: Extract and Open the Project
+
+1. Extract the project ZIP file.
+2. Open the extracted `MLOps_Telecom_Churn` folder in VS Code.
+3. Open the VS Code terminal at the project root.
+
+---
+
+## Step 2: Create and Activate the Virtual Environment
+
+Create the virtual environment:
+
+```cmd
 python -m venv .venv
 ```
 
-## Step 5: Activate Virtual Environment
+Activate it on Windows:
 
-```bash
+```cmd
 .venv\Scripts\activate
-```
-
-## Step 6: Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-## Step 7: Run Tests
-
-```bash
-python -m pytest -v
 ```
 
 ---
 
-# 21. Recommended Execution Order
+## Step 3: Install Dependencies
 
-For a complete classroom demonstration:
+Run:
 
-### 1. Setup
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate
+```cmd
 pip install -r requirements.txt
 ```
 
-### 2. Test the Project
+---
 
-```bash
-python -m pytest -v
+## Step 4: Run Validation
+
+Run:
+
+```cmd
+python -m pytest -v validate_pipeline.py
 ```
 
-### 3. Train Baseline Models
-
-```bash
-python baseline.py
-```
-
-### 4. Select the Best Model
-
-```bash
-python model_selection.py
-```
-
-### 5. Start MLflow
-
-```bash
-python -m mlflow ui --backend-store-uri ./mlruns
-```
-
-### 6. Run Monitoring
-
-```bash
-python main.py
-```
-
-### 7. Start FastAPI
-
-```bash
-uvicorn src.api.main:app --host 127.0.0.1 --port 8001
-```
-
-### 8. Start Streamlit
-
-```bash
-python -m streamlit run src/dashboard/app.py
-```
-
-### 9. Demonstrate Event Watcher
-
-```bash
-python event_watcher.py
-```
-
-In another terminal:
-
-```bash
-python simulate_incoming.py
-```
-
-### 10. Demonstrate Scheduler
-
-Stop the Event Watcher and simulator first.
-
-Then:
-
-```bash
-python scheduler.py
-```
-
-Manually place a CSV inside:
+Expected:
 
 ```text
-data/incoming/
+4 passed
 ```
-
-### 11. Demonstrate Human Approval
-
-Use the Streamlit dashboard to review and approve/reject the retraining workflow.
 
 ---
 
-# 22. Important URLs
+## Step 5: Run Baseline Training
+
+Run:
+
+```cmd
+python modelling\train.py
+```
+
+This trains the baseline model used by the project.
+
+---
+
+## Step 6: Run Model Selection
+
+Run:
+
+```cmd
+python modelling\model_selection.py
+```
+
+This evaluates the candidate models and stores the model-selection metrics used by the project.
+
+---
+
+## Step 7: Start MLflow
+
+Run:
+
+```cmd
+mlflow ui --host 127.0.0.1 --port 5000
+```
+
+Open:
+
+```text
+http://localhost:5000
+```
+
+Keep this terminal running.
+
+---
+
+## Step 8: Start FastAPI and Streamlit
+
+Start FastAPI:
+
+```cmd
+uvicorn src.main:app --reload
+```
+
+Start Streamlit in another terminal:
+
+```cmd
+streamlit run src/streamlit_app.py
+```
+
+Open:
+
+```text
+http://localhost:8001/docs
+```
+
+and:
+
+```text
+http://localhost:8501
+```
+
+Keep these services running while demonstrating the workflow.
+
+---
+
+## Step 9: Generate the Workflow Datasets
+
+Before starting the Event Watcher:
+
+```cmd
+python deployment\data_simulator_source.py
+```
+
+This prepares the datasets required for the Event Watcher and Scheduler demonstrations.
+
+---
+
+# 22. Event Watcher Demonstration
+
+## Step 1: Start the Event Watcher
+
+Open a new VS Code terminal:
+
+```cmd
+python deployment\drift_monitor_and_trigger.py
+```
+
+Keep this terminal running.
+
+## Step 2: Start the Data Simulator
+
+Open another terminal:
+
+```cmd
+python deployment\data_simulator_stream.py
+```
+
+Observe the Event Watcher terminal and Streamlit dashboard.
+
+## Step 3: Complete the Workflow
+
+Follow the incoming-data workflow through:
+
+```text
+Incoming Data
+      |
+      v
+Validation
+      |
+      v
+Training Data Update
+      |
+      v
+DVC Versioning
+      |
+      v
+Drift Detection
+      |
+      v
+Retraining Decision
+      |
+      v
+Human Approval
+      |
+      v
+Candidate Training
+      |
+      v
+Model Approval
+      |
+      v
+Monitoring
+```
+
+## Step 4: Stop the Event Watcher
+
+After the Event Watcher workflow has completed:
+
+```text
+Ctrl + C
+```
+
+Stop it in the terminal where the Event Watcher is running.
+
+---
+
+# 23. Prepare for the Scheduler Demonstration
+
+After finishing the Event Watcher workflow:
+
+### 1. Stop the Event Watcher
+
+Make sure the Event Watcher process is stopped.
+
+### 2. Clean the generated incoming folder
+
+Run:
+
+```cmd
+del /q data\data_sources\incoming\*
+```
+
+### 3. Make sure the incoming folder is empty
+
+This prevents previously processed Event Watcher data from being picked up again.
+
+---
+
+# 24. Scheduler Demonstration
+
+## Step 1: Start the Scheduler
+
+Open a new VS Code terminal:
+
+```cmd
+python deployment\scheduler.py
+```
+
+Keep this terminal running.
+
+## Step 2: Start the Data Simulator
+
+Open another VS Code terminal:
+
+```cmd
+python deployment\data_simulator_stream.py
+```
+
+Observe the Scheduler terminal and Streamlit dashboard.
+
+## Step 3: Wait for Scheduler Cycles
+
+The Scheduler runs on a 1-minute cycle.
+
+After an approval or retraining action, wait for the next scheduler cycle before expecting the next stage.
+
+## Step 4: Stop the Scheduler
+
+After the Scheduler workflow has completed:
+
+```text
+Ctrl + C
+```
+
+Stop it in the terminal where the Scheduler is running.
+
+---
+
+# 25. Reset Event Watcher and Scheduler Before Docker
+
+Before starting Docker, clean the generated Event Watcher and Scheduler workflow state.
+
+This reset ensures Docker starts with:
+
+- Event Watcher baseline dataset = 5,300 rows
+- Scheduler baseline dataset = 5,300 rows
+- No old generated `.dvc` files
+- Empty `incoming/` and `incoming_batches/` folders
+
+## Step 1: Stop Event Watcher and Scheduler
+
+Stop both Python processes before continuing.
+
+## Step 2: Delete the generated incoming files
+
+Run:
+
+```cmd
+del /q data\data_sources\incoming\*
+```
+
+## Step 3: Reset the Event Watcher dataset
+
+Restore the original 5,300-row dataset:
+
+```cmd
+copy /Y data\data_sources\train.csv data\data_sources\event_watcher_data\train_trigger.csv
+```
+
+Remove existing generated DVC metadata:
+
+```cmd
+del /q data\data_sources\event_watcher_data\train_trigger.csv.dvc
+```
+
+Verify:
+
+```cmd
+python -c "import pandas as pd; df=pd.read_csv('data/data_sources/event_watcher_data/train_trigger.csv'); print('Rows:', len(df)); print('Columns:', len(df.columns))"
+```
+
+Expected:
+
+```text
+Rows: 5300
+Columns: 21
+```
+
+## Step 4: Reset the Scheduler dataset
+
+Restore the original 5,300-row dataset:
+
+```cmd
+copy /Y data\data_sources\train.csv data\data_sources\scheduler_data\train_scheduler.csv
+```
+
+Remove existing generated DVC metadata:
+
+```cmd
+del /q data\data_sources\scheduler_data\train_scheduler.csv.dvc
+```
+
+Verify:
+
+```cmd
+python -c "import pandas as pd; df=pd.read_csv('data/data_sources/scheduler_data/train_scheduler.csv'); print('Rows:', len(df)); print('Columns:', len(df.columns))"
+```
+
+Expected:
+
+```text
+Rows: 5300
+Columns: 21
+```
+
+## Step 5: Remove Scheduler Processing History
+
+Run:
+
+```cmd
+del /q logs\scheduler_processed_files.json
+```
+
+## Important DVC Note
+
+Do **not** delete `.dvc/cache`.
+
+The workflow-generated `.dvc` metadata files can be removed during this reset, but the DVC cache is separate from the `.dvc` metadata directory.
+
+---
+
+# 26. Docker Demonstration
+
+After completing the Event Watcher and Scheduler demonstrations and cleaning the generated workflow state:
+
+## Step 1: Start Docker
+
+From the project root:
+
+```cmd
+docker compose -f deployment\docker\docker-compose.yml up --build
+```
+
+Docker starts:
+
+- FastAPI
+- Streamlit
+- Event Watcher
+
+The Scheduler is intentionally **NOT** started by Docker.
+
+## Step 2: Open Streamlit
+
+```text
+http://localhost:8501
+```
+
+Use Streamlit to observe the MLOps workflow and monitoring/approval information.
+
+## Step 3: Open FastAPI
+
+```text
+http://localhost:8001/docs
+```
+
+This opens the FastAPI Swagger documentation.
+
+## Step 4: Run the Data Simulator
+
+Keep Docker running.
+
+Open another VS Code terminal at the project root:
+
+```cmd
+python deployment\data_simulator_stream.py
+```
+
+The simulator generates incoming data while the Event Watcher running inside Docker processes it.
+
+Observe:
+
+- Docker terminal
+- Event Watcher processing
+- Streamlit dashboard
+- FastAPI, where applicable
+
+## Step 5: Stop Docker
+
+```cmd
+docker compose -f deployment\docker\docker-compose.yml down
+```
+
+---
+
+# 27. Running the Simulation Again
+
+Before running the simulation again, reset the generated workflow state.
+
+This is important because previously generated records can cause duplicate `CUSTOMER_ID` problems during another simulation run.
+
+## Clean Generated CSV Files
+
+Remove generated CSV files from:
+
+```text
+data\data_sources\event_watcher_data\
+data\data_sources\scheduler_data\
+```
+
+Do not delete the original baseline/project CSV files.
+
+## Clean Generated DVC Files
+
+Remove the generated Event Watcher and Scheduler DVC files created by the previous simulation.
+
+Do not delete DVC files that are part of the original project/repository unless the workflow specifically instructs you to restore or regenerate them.
+
+## Empty the Incoming Directory
+
+Make sure this directory is empty:
+
+```text
+data\data_sources\incoming\
+```
+
+Remove previously generated incoming files before starting another simulation.
+
+## Restore the Event Watcher Baseline
+
+Restore:
+
+```cmd
+copy /Y data\data_sources\train.csv data\data_sources\event_watcher_data\train_trigger.csv
+```
+
+Remove old generated DVC metadata:
+
+```cmd
+del /q data\data_sources\event_watcher_data\train_trigger.csv.dvc
+```
+
+Verify:
+
+```cmd
+python -c "import pandas as pd; df=pd.read_csv('data/data_sources/event_watcher_data/train_trigger.csv'); print('Rows:', len(df)); print('Columns:', len(df.columns))"
+```
+
+## Restore the Scheduler Baseline
+
+Restore:
+
+```cmd
+copy /Y data\data_sources\train.csv data\data_sources\scheduler_data\train_scheduler.csv
+```
+
+Remove old generated DVC metadata:
+
+```cmd
+del /q data\data_sources\scheduler_data\train_scheduler.csv.dvc
+```
+
+Verify:
+
+```cmd
+python -c "import pandas as pd; df=pd.read_csv('data/data_sources/scheduler_data/train_scheduler.csv'); print('Rows:', len(df)); print('Columns:', len(df.columns))"
+```
+
+Remove Scheduler processing history:
+
+```cmd
+del /q logs\scheduler_processed_files.json
+```
+
+Verify both datasets:
+
+```cmd
+python -c "import pandas as pd; print('Event Watcher rows:', len(pd.read_csv('data/data_sources/event_watcher_data/train_trigger.csv'))); print('Scheduler rows:', len(pd.read_csv('data/data_sources/scheduler_data/train_scheduler.csv')))"
+```
+
+Expected:
+
+```text
+Event Watcher rows: 5300
+Scheduler rows: 5300
+```
+
+After restoring the required baseline datasets, cleaning generated CSV/DVC files, and emptying `incoming/`, run the required workflow again.
+
+This clean reset helps avoid duplicate `CUSTOMER_ID` errors and keeps repeated demonstrations reproducible.
+
+---
+
+# 28. Quick Command Reference
+
+| Task | Command |
+|---|---|
+| Create environment | `python -m venv .venv` |
+| Activate environment | `.venv\Scripts\activate` |
+| Install dependencies | `pip install -r requirements.txt` |
+| Run validation | `python -m pytest -v validate_pipeline.py` |
+| Train baseline | `python modelling\train.py` |
+| Model selection | `python modelling\model_selection.py` |
+| MLflow | `mlflow ui --host 127.0.0.1 --port 5000` |
+| FastAPI | `uvicorn src.main:app --reload` |
+| Streamlit | `streamlit run src/streamlit_app.py` |
+| Generate workflow datasets | `python deployment\data_simulator_source.py` |
+| Event Watcher | `python deployment\drift_monitor_and_trigger.py` |
+| Data simulator | `python deployment\data_simulator_stream.py` |
+| Scheduler | `python deployment\scheduler.py` |
+| Docker | `docker compose -f deployment\docker\docker-compose.yml up --build` |
+| Stop Docker | `docker compose -f deployment\docker\docker-compose.yml down` |
+
+---
+
+# 29. Important URLs
 
 | Service | URL |
 |---|---|
-| MLflow | http://127.0.0.1:5000 |
-| FastAPI | http://127.0.0.1:8001 |
-| FastAPI Swagger | http://127.0.0.1:8001/docs |
+| MLflow | http://localhost:5000 |
+| FastAPI | http://localhost:8001 |
+| FastAPI Swagger | http://localhost:8001/docs |
 | Streamlit | http://localhost:8501 |
 
 ---
 
-# 23. Troubleshooting
+# 30. Troubleshooting
 
 ### Missing Python Package
 
-```bash
+Run:
+
+```cmd
 pip install -r requirements.txt
 ```
 
@@ -746,23 +1395,23 @@ pip install -r requirements.txt
 
 Use:
 
-```bash
-python -m streamlit run src/dashboard/app.py
+```cmd
+streamlit run src\streamlit_app.py
 ```
 
 ### MLflow Not Found
 
 Use:
 
-```bash
-python -m mlflow ui --backend-store-uri ./mlruns
+```cmd
+mlflow ui --host 127.0.0.1 --port 5000
 ```
 
 ### DVC Not Found
 
 Use:
 
-```bash
+```cmd
 python -m dvc
 ```
 
@@ -770,21 +1419,33 @@ python -m dvc
 
 Make sure the terminal is opened from the project root and run:
 
-```bash
-uvicorn src.api.main:app --host 127.0.0.1 --port 8001
+```cmd
+uvicorn src.main:app --reload
 ```
 
 ### Scheduler Does Not Process Immediately
 
-The Scheduler checks periodically. For the classroom version, the interval is approximately 1 minute.
+The Scheduler checks periodically.
+
+For the classroom version, the interval is approximately **1 minute**.
+
+Wait for the next Scheduler cycle before assuming that the workflow is stuck.
 
 ### No New Customer Records
 
-If the incoming CSV contains customer IDs that already exist in the training dataset, no new records may be added. This is expected.
+If the incoming CSV contains customer IDs that already exist in the training dataset, no new records may be added.
+
+This is expected.
+
+### Duplicate Customer ID During a New Demonstration
+
+Reset the generated Event Watcher and Scheduler datasets and clear the generated incoming files before starting another simulation.
+
+Use the reset procedure in **Section 27 — Running the Simulation Again**.
 
 ---
 
-# 24. Key MLOps Concepts
+# 31. Key MLOps Concepts
 
 This project demonstrates:
 
@@ -809,101 +1470,100 @@ This project demonstrates:
 
 ---
 
-# 25. Important Notes
+# 32. Important Notes
 
 - This is an educational project.
 - Event Watcher and Scheduler are separate demonstrations.
+- Complete the Event Watcher demonstration before starting the Scheduler demonstration.
+- Clean the generated incoming files before switching from Event Watcher to Scheduler.
 - The Event Watcher demonstration uses the incoming-data simulator.
-- The Scheduler demonstration uses a manually placed CSV.
+- The Scheduler demonstration also uses the data simulator to generate incoming data.
 - FastAPI and Streamlit should be running for the human approval demonstration.
 - Data drift does not automatically mean model performance has degraded.
 - A candidate model does not automatically become the production model.
+- Human approval is required at the configured approval stages.
 - Runtime-generated logs, MLflow data, model artifacts, and temporary incoming files should not normally be committed to Git.
+- Docker starts FastAPI, Streamlit, and Event Watcher.
+- The Scheduler is intentionally not started by Docker.
+- Do not delete the DVC cache during normal workflow resets.
 
 ---
 
-# 26. Quick Command Reference
-
-| Task | Command |
-|---|---|
-| Activate environment | `.venv\Scripts\activate` |
-| Install dependencies | `pip install -r requirements.txt` |
-| Run tests | `python -m pytest -v` |
-| Train baseline | `python baseline.py` |
-| Model selection | `python model_selection.py` |
-| Monitoring | `python main.py` |
-| MLflow | `python -m mlflow ui --backend-store-uri ./mlruns` |
-| FastAPI | `uvicorn src.api.main:app --host 127.0.0.1 --port 8001` |
-| Streamlit | `python -m streamlit run src/dashboard/app.py` |
-| Event Watcher | `python event_watcher.py` |
-| Simulator | `python simulate_incoming.py` |
-| Scheduler | `python scheduler.py` |
-| Docker | `docker compose up --build` |
-
----
-
-# 27. Final Workflow
+# 33. Final Workflow
 
 The complete project lifecycle is:
 
 ```text
-                    TELECOM CHURN MLOPS
-
+                         TELECOM CHURN MLOPS
+                                |
+                                v
                          Training Data
-                              |
-                              v
-                       Data Validation
-                              |
-                              v
-                       Model Training
-                              |
-                              v
-                       Model Selection
-                              |
-                              v
+                                |
+                                v
+                        Data Validation
+                                |
+                                v
+                     Baseline Model Training
+                                |
+                                v
+                        Model Selection
+                                |
+                                v
                        MLflow Tracking
-                              |
-                              v
+                                |
+                                v
                           Monitoring
-                              |
-                              v
-                      Incoming New Data
-                              |
-                    +---------+---------+
-                    |                   |
-                    v                   v
-              Event Watcher         Scheduler
-                    |                   |
-                    +---------+---------+
-                              |
-                              v
-                       Data Validation
-                              |
-                              v
-                    Update Training Data
-                              |
-                              v
-                       Drift Detection
-                              |
-                              v
-                        Policy Decision
-                              |
-                    +---------+---------+
-                    |                   |
-                    v                   v
-                 No Action          Retraining
-                                        |
-                                        v
-                                Human Approval
-                                        |
-                                        v
-                                Candidate Model
-                                        |
-                                        v
-                              Production Approval
-                                        |
-                                        v
-                               Production Model
+                                |
+                                v
+                     Incoming New Data
+                                |
+                    +-----------+-----------+
+                    |                       |
+                    v                       v
+              Event Watcher             Scheduler
+                    |                       |
+                    +-----------+-----------+
+                                |
+                                v
+                         Data Validation
+                                |
+                                v
+                      Update Training Data
+                                |
+                                v
+                         DVC Versioning
+                                |
+                                v
+                        Drift Detection
+                                |
+                                v
+                         Policy Decision
+                                |
+                    +-----------+-----------+
+                    |                       |
+                    v                       v
+                 No Action             Retraining
+                                            |
+                                            v
+                                   Human Approval
+                                            |
+                                            v
+                                    Candidate Model
+                                            |
+                                            v
+                                     Model Approval
+                                            |
+                                            v
+                                    Production Model
+                                            |
+                                            v
+                                         Docker
+                                            |
+                                            v
+                              FastAPI + Streamlit +
+                                  Event Watcher
 ```
 
 This project provides a complete educational example of how machine learning can be managed as an operational lifecycle rather than as a one-time model training exercise.
+
+For the exact learner execution sequence, use the companion `execution_flow.md` file.
