@@ -141,7 +141,7 @@ st.sidebar.divider()
 
 if st.sidebar.button(
     "🔄 Refresh Status",
-    use_container_width=True
+    width="stretch"
 ):
     st.cache_data.clear()
     st.rerun()
@@ -320,7 +320,7 @@ with tab_prediction:
         predict_button = st.form_submit_button(
             "Predict Churn",
             type="primary",
-            use_container_width=True
+            width="stretch"
         )
 
     if predict_button:
@@ -563,7 +563,7 @@ def render_live_monitoring():
 
     st.dataframe(
         display_df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True
     )
 
@@ -607,7 +607,7 @@ def render_live_monitoring():
 
         st.dataframe(
             candidate_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
@@ -904,7 +904,7 @@ def render_live_monitoring():
 
         st.dataframe(
             scheduler_display_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
@@ -1101,7 +1101,7 @@ def render_live_monitoring():
                         scheduler_approvals[
                             approval_columns
                         ],
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True
                     )
 
@@ -1287,7 +1287,7 @@ def render_model_comparison():
 
             st.dataframe(
                 initial_display_df,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
 
@@ -1407,7 +1407,7 @@ def render_model_comparison():
 
             st.dataframe(
                 latest_monitoring_display,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
 
@@ -1566,7 +1566,7 @@ def render_model_comparison():
 
             st.dataframe(
                 candidates_display_df,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
 
@@ -1807,7 +1807,7 @@ def render_human_approval():
             if st.button(
                 "Submit Retraining Decision",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 key="submit_retraining_decision"
             ):
 
@@ -1979,7 +1979,7 @@ def render_human_approval():
 
             st.dataframe(
                 production_df,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
 
@@ -2008,7 +2008,7 @@ def render_human_approval():
 
         st.dataframe(
             candidates_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
@@ -2115,7 +2115,7 @@ def render_human_approval():
         if st.button(
             "Submit Production Decision",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=approval_blocked,
             key="submit_production_decision"
         ):
