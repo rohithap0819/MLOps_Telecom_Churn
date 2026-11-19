@@ -1,0 +1,70 @@
+services:
+
+  # --------------------------------------------------
+  # Telecom Churn MLOps application
+  # --------------------------------------------------
+
+  telecom-churn:
+    # Build the Docker image using the Dockerfile
+    # located in the project directory.
+    build:
+      context: ../..
+      dockerfile: deployment/docker/Dockerfile
+
+    # Give the running container a predictable name.
+    container_name: telecom-churn-mlops
+
+    # --------------------------------------------------
+    # Application ports
+    # --------------------------------------------------
+
+    ports:
+
+      # Streamlit dashboard
+      # Host:8501 -> Container:8501
+      - "8501:8501"
+
+      # FastAPI backend
+      # Host:8001 -> Container:8001
+      - "8001:8001"
+
+    # --------------------------------------------------
+    # Persistent project data
+    # --------------------------------------------------
+
+    volumes:
+
+      # Mount the local project data directory.
+      # This allows Event Watcher to see incoming CSV files.
+      - ../../data:/app/data
+
+      # Store model artifacts in a Docker-managed volume.
+      - models_data:/app/models
+
+      # Store logs and monitoring reports persistently.
+      - logs_data:/app/logs
+
+      # Store MLflow experiment data persistently.
+      - mlflow_data:/app/mlruns
+
+    # --------------------------------------------------
+    # Container restart policy
+    # --------------------------------------------------
+
+    restart: unless-stopped
+
+
+# ------------------------------------------------------
+# Named Docker volumes
+# ------------------------------------------------------
+
+volumes:
+
+  # Model artifacts
+  models_data:
+
+  # Logs and monitoring reports
+  logs_data:
+
+  # MLflow experiment data
+  mlflow_data:
